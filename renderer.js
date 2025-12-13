@@ -5,6 +5,49 @@ document.addEventListener('DOMContentLoaded', () => {
     const status = document.getElementById('status');
     const webview = document.getElementById('doc-view');
 
+    // renderer.js - ADD SEARCH LOGIC
+
+    const searchBox = document.getElementById('search-box');
+    let searchTimeout = null;
+
+    // Listen for typing
+    searchBox.addEventListener('input', (e) => {
+        const query = e.target.value.trim();
+
+        // Clear previous timer
+        if (searchTimeout) clearTimeout(searchTimeout);
+
+        // If box is empty, reload the Root Tree
+        if (query.length === 0) {
+            init(); // Call your existing init() function to reset tree
+            return;
+        }
+
+        // Wait 500ms after typing stops, then search
+        searchTimeout = setTimeout(async () => {
+            status.innerText = `Searching for "${query}"...`;
+            fileList.innerHTML = ''; // Clear tree
+
+            try {
+                const results = await window.api.searchFiles(query);
+                
+                if (results.length === 0) {
+                    fileList.innerHTML = '<div style="padding:15px; color:#666;">No results found.</div>';
+                    status.innerText = 'No results.';
+                } else {
+                    status.innerText = `Found ${results.length} results.`;
+                    // Render results as a flat list
+                    results.forEach(file => {
+                        fileList.appendChild(createTreeItem(file));
+                    });
+                }
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Search failed.";
+            }
+        }, 500);
+    });
+
     // 1. LISTEN FOR HEADER CONTEXT MENU (Deep Linking)
     webview.addEventListener('ipc-message', (event) => {
         if (event.channel === 'header-context-menu') {

@@ -21,6 +21,34 @@ const driveReady = new Promise((resolve, reject) => {
   driveReadyReject = reject;
 });
 
+// main.js - ADD SEARCH HANDLER
+
+// ... inside your IPC handlers section ...
+
+// NEW: Search Files Handler
+ipcMain.handle('drive:searchFiles', async (event, query) => {
+  if (!authClient) return [];
+
+  google.options({ auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    // Search for name containing query, not trashed
+    const res = await drive.files.list({
+      q: `name contains '${query}' and trashed = false`,
+      pageSize: 20, // Limit results to keep it snappy
+      fields: 'files(id, name, mimeType, webViewLink, iconLink)',
+      orderBy: 'folder, name', 
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+    });
+    return res.data.files ?? [];
+  } catch (err) {
+    console.error("Search Error:", err);
+    return [];
+  }
+});
+
 // IPC HANDLER: List Files
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) {

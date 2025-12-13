@@ -12,7 +12,6 @@
       overflow: hidden; 
     }
     
-    /* SIDEBAR STYLES */
     #sidebar {
       width: 320px;
       background: #f8f9fa;
@@ -40,69 +39,40 @@
       padding: 10px 0;
     }
 
-    /* TREE VIEW STYLES */
     .tree-node { user-select: none; }
-    
     .tree-label {
-      display: flex; 
-      align-items: center; 
-      padding: 6px 12px;
-      cursor: pointer; 
-      font-size: 14px; 
-      color: #3c4043; 
-      transition: background 0.1s;
+      display: flex; align-items: center; padding: 6px 12px;
+      cursor: pointer; font-size: 14px; color: #3c4043; transition: background 0.1s;
     }
-    
     .tree-label:hover { background-color: #f1f3f4; }
-    
-    .tree-label.selected { 
-      background-color: #e8f0fe; 
-      color: #1967d2; 
-      font-weight: 500; 
-    }
-    
+    .tree-label.selected { background-color: #e8f0fe; color: #1967d2; font-weight: 500; }
     .tree-arrow {
-      display: inline-block; 
-      width: 18px; 
-      font-size: 10px; 
-      color: #70757a;
-      transition: transform 0.1s; 
-      text-align: center; 
-      margin-right: 4px;
+      display: inline-block; width: 18px; font-size: 10px; color: #70757a;
+      transition: transform 0.1s; text-align: center; margin-right: 4px;
     }
-    
     .tree-arrow.rotated { transform: rotate(90deg); }
-    
     .tree-children {
-      display: none; 
-      margin-left: 10px; 
-      padding-left: 10px; 
-      border-left: 1px solid #e8eaed;
+      display: none; margin-left: 10px; padding-left: 10px; border-left: 1px solid #e8eaed;
     }
-    
     .tree-icon { margin-right: 8px; font-size: 16px; }
 
-    /* VIEWER PANE STYLES */
-    #viewer { 
-      flex: 1; 
-      background: #fff; 
-      position: relative; 
-    }
-    
-    webview { 
-      width: 100%; 
-      height: 100%; 
-      border: none; 
-    }
+    #viewer { flex: 1; background: #fff; position: relative; }
+    webview { width: 100%; height: 100%; border: none; }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <div id="status">Initializing...</div>
+    
+    <div style="padding: 10px; border-bottom: 1px solid #dadce0;">
+        <input type="text" id="search-box" placeholder="🔍 Search Drive..." 
+               style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
+    </div>
+
     <div id="file-list"></div>
   </div>
 
-<div id="viewer">
+  <div id="viewer">
     <webview 
       id="doc-view" 
       src="about:blank"
@@ -110,7 +80,7 @@
       allowpopups
       useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36">
     </webview>
-</div>
+  </div>
 
   <script src="renderer.js"></script>
 </body>

@@ -1,21 +1,17 @@
-// renderer.js - WITH RIGHT-CLICK SUPPORT
+// renderer.js
 document.addEventListener('DOMContentLoaded', () => {
     
     const fileList = document.getElementById('file-list');
     const status = document.getElementById('status');
     const webview = document.getElementById('doc-view');
-  
-// NEW: Listen for messages from the webview-preload.js
+
+    // 1. LISTEN FOR HEADER CONTEXT MENU (Deep Linking)
     webview.addEventListener('ipc-message', (event) => {
         if (event.channel === 'header-context-menu') {
-            // event.args[0] contains the { url, text } object we sent
-            const data = event.args[0];
-            
-            // Tell the main process to show the menu
-            window.api.showHeaderMenu(data);
+            window.api.showHeaderMenu(event.args[0]);
         }
     });
-
+  
     function getIcon(mimeType) {
       if (mimeType === 'application/vnd.google-apps.folder') return '📁';
       if (mimeType.includes('spreadsheet')) return '📊';
@@ -52,30 +48,28 @@ document.addEventListener('DOMContentLoaded', () => {
       const childrenContainer = document.createElement('div');
       childrenContainer.className = 'tree-children';
   
-      // LEFT CLICK LOGIC (Preview)
+      // LEFT CLICK: Preview or Expand
       labelRow.onclick = async (e) => {
         e.stopPropagation();
   
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         labelRow.classList.add('selected');
   
+        // 1. File -> Preview
         if (!isFolder && file.webViewLink) {
             status.innerText = `Loading: ${file.name}...`;
-            
-            // Force preview mode for safe viewing
             let link = file.webViewLink;
             if (link.includes('/view') || link.includes('/edit')) {
                  link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
             }
-            
             webview.src = link;
-            
             webview.addEventListener('did-finish-load', () => {
                 status.innerText = `Viewing: ${file.name}`;
             }, { once: true });
             return;
         }
   
+        // 2. Folder -> Expand/Collapse
         if (isFolder) {
             const isExpanded = childrenContainer.style.display === 'block';
   
@@ -91,11 +85,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (childrenContainer.children.length === 0) {
                     const originalIcon = icon.innerText;
                     icon.innerText = '⏳';
-                    
                     try {
                         status.innerText = `Fetching contents of ${file.name}...`;
                         const children = await window.api.listFiles(file.id);
-                        
                         if (children.length === 0) {
                             const emptyMsg = document.createElement('div');
                             emptyMsg.innerText = '(empty)';
@@ -104,9 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             emptyMsg.style.color = '#999';
                             childrenContainer.appendChild(emptyMsg);
                         } else {
-                            children.forEach(child => {
-                                childrenContainer.appendChild(createTreeItem(child));
-                            });
+                            children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
                         }
                         status.innerText = 'Ready';
                     } catch (err) {
@@ -121,20 +111,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       };
 
-      // RIGHT CLICK LOGIC (Open in Browser)
+      // UPDATED: RIGHT CLICK (Context Menu) - Works on Files AND Folders
       labelRow.addEventListener('contextmenu', (e) => {
         e.preventDefault(); 
-        if (!isFolder) {
-            // Select the item visually
-            document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
-            labelRow.classList.add('selected');
+        
+        // Select it visually
+        document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
+        labelRow.classList.add('selected');
 
-            // Trigger the native menu
-            window.api.showContextMenu({
-                name: file.name,
-                webViewLink: file.webViewLink
-            });
-        }
+        // Send data to Main process
+        window.api.showContextMenu({
+            name: file.name,
+            link: file.webViewLink,
+            isFolder: isFolder // Pass this so main.js knows what text to show
+        });
       });
   
       nodeContainer.appendChild(labelRow);
@@ -146,23 +136,14 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         status.innerText = 'Waiting for Google sign-in...';
         const rootFiles = await window.api.listFiles('root');
-        
         status.innerText = `Loaded ${rootFiles.length} items from Root.`;
         fileList.innerHTML = '';
-        
-        if (rootFiles.length === 0) {
-            fileList.innerText = "No files found in root.";
-        }
-  
-        rootFiles.forEach(file => {
-            fileList.appendChild(createTreeItem(file));
-        });
+        if (rootFiles.length === 0) fileList.innerText = "No files found in root.";
+        rootFiles.forEach(file => fileList.appendChild(createTreeItem(file)));
       } catch (e) {
         console.error(e);
         status.innerText = 'Error initializing app.';
-        fileList.innerHTML = `<div style="padding:10px; color:red;">
-          <strong>Error:</strong> ${e.message}
-        </div>`;
+        fileList.innerHTML = `<div style="padding:10px; color:red;"><strong>Error:</strong> ${e.message}</div>`;
       }
     }
   

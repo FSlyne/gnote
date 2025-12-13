@@ -1,9 +1,11 @@
-// main.js - WITH RIGHT-CLICK MENU
-const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+// main.js - WITH COPY LINK OPTION
+const { app, BrowserWindow, ipcMain, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const process = require('process');
 const { authenticate } = require('@google-cloud/local-auth');
 const { google } = require('googleapis');
+
+// ... (Rest of your Setup / Auth code remains the same) ...
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.metadata.readonly',
@@ -22,11 +24,7 @@ const driveReady = new Promise((resolve, reject) => {
 // IPC HANDLER: List Files
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) {
-    try {
-      await driveReady;
-    } catch (e) {
-      throw new Error("Authentication failed");
-    }
+    try { await driveReady; } catch (e) { throw new Error("Authentication failed"); }
   }
 
   google.options({ auth: authClient });
@@ -41,7 +39,6 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
     });
-
     return res.data.files ?? [];
   } catch (err) {
     console.error("Drive API Error:", err);
@@ -49,15 +46,20 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   }
 });
 
-// NEW: Context Menu Handler (Right-Click)
-ipcMain.on('show-context-menu', (event, file) => {
+// UPDATED: Context Menu Handler
+ipcMain.on('show-context-menu', (event, { name, link, isFolder }) => {
   const template = [
     {
-      label: `Open "${file.name}" in Browser`,
+      label: `Open "${name}" in Browser`,
       click: () => {
-        if (file.webViewLink) {
-          shell.openExternal(file.webViewLink);
-        }
+        if (link) shell.openExternal(link);
+      }
+    },
+    { type: 'separator' },
+    {
+      label: isFolder ? 'Copy Folder Link' : 'Copy File Link',
+      click: () => {
+        if (link) clipboard.writeText(link);
       }
     }
   ];
@@ -65,17 +67,12 @@ ipcMain.on('show-context-menu', (event, file) => {
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
-// main.js
-
-// NEW: Handle Deep Link Context Menu
+// NEW: Handle Deep Link from Right Pane (Keep this if you added the previous feature)
 ipcMain.on('show-header-menu', (event, { url, text }) => {
-  const { clipboard } = require('electron'); // Ensure clipboard is imported
   const template = [
     {
       label: `Copy Link to Header: "${text}..."`,
-      click: () => {
-        clipboard.writeText(url);
-      }
+      click: () => { clipboard.writeText(url); }
     }
   ];
   const menu = Menu.buildFromTemplate(template);
@@ -96,10 +93,7 @@ async function createWindow() {
   });
 
   win.loadFile('index.html');
-
-  win.once('ready-to-show', () => {
-    win.show();
-  });
+  win.once('ready-to-show', () => win.show());
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://accounts.google.com') || url.startsWith('https://docs.google.com')) {
@@ -113,22 +107,14 @@ async function createWindow() {
       keyfilePath: path.join(__dirname, 'credentials.json'),
       scopes: SCOPES,
     });
-
     const credentials = require('./credentials.json'); 
     const keys = credentials.installed || credentials.web;
-
     const oauth2Client = new google.auth.OAuth2(
-      keys.client_id,
-      keys.client_secret,
-      keys.redirect_uris[0]
+      keys.client_id, keys.client_secret, keys.redirect_uris[0]
     );
-
     oauth2Client.setCredentials(localAuth.credentials);
     authClient = oauth2Client;
-    
-    console.log("Authentication successful");
     driveReadyResolve(true);
-
   } catch (error) {
     console.error('Login Failed:', error);
     driveReadyReject(error);

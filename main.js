@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, Menu, clipboard } = require('electron');
 const path = require('path');
-const http = require('http'); // Crucial for catching the login
+const http = require('http');
 const url = require('url');
 const fs = require('fs');
 const { google } = require('googleapis');
@@ -11,7 +11,7 @@ let authClient = null;
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 
-// SCOPES: We need full drive access to create/edit files
+// SCOPES
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.file',
@@ -19,7 +19,7 @@ const SCOPES = [
 ];
 
 // ---------------------------------------------------------
-// 1. AUTHENTICATION LOGIC (Restored & Robust)
+// 1. AUTHENTICATION LOGIC
 // ---------------------------------------------------------
 
 function loadSavedCredentials() {
@@ -63,13 +63,11 @@ async function startAuthentication() {
   );
 
   return new Promise((resolve, reject) => {
-    // A. Generate the URL
     const authorizeUrl = oAuth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: SCOPES,
     });
 
-    // B. Start Local Server to catch the callback
     const server = http.createServer(async (req, res) => {
       try {
         if (req.url.indexOf('/oauth2callback') > -1) {
@@ -77,21 +75,18 @@ async function startAuthentication() {
           const code = qs.get('code');
           
           res.end('<h1>Login Successful!</h1><p>You can close this tab and return to the app.</p>');
-          server.close(); // Stop listening
+          server.close(); 
 
-          // C. Exchange code for tokens
           console.log("Exchanging code for tokens...");
           const { tokens } = await oAuth2Client.getToken(code);
           oAuth2Client.setCredentials(tokens);
           authClient = oAuth2Client;
 
-          // D. Save to disk
           fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
           console.log("Token saved to token.json");
           
           resolve(oAuth2Client);
           
-          // E. Notify Window
           if (win) {
               console.log("Sending success signal to window...");
               win.webContents.send('auth:success');
@@ -103,7 +98,6 @@ async function startAuthentication() {
       }
     });
     
-    // C. Listen on Port 3000
     server.listen(3000, () => {
       console.log("Opening browser for auth...");
       shell.openExternal(authorizeUrl);
@@ -125,6 +119,7 @@ ipcMain.handle('auth:openWebLogin', async () => {
   }
 });
 
+// A. List Files (Updated with 'parents' field for Drag & Drop)
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) loadSavedCredentials();
   if (!authClient) return []; 
@@ -136,7 +131,7 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
       pageSize: 100,
-      fields: 'files(id, name, mimeType, webViewLink, iconLink)',
+      fields: 'files(id, name, mimeType, webViewLink, iconLink, parents)',
       orderBy: 'folder, name', 
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
@@ -148,6 +143,7 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   }
 });
 
+// B. Search Files
 ipcMain.handle('drive:searchFiles', async (event, query) => {
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -161,7 +157,7 @@ ipcMain.handle('drive:searchFiles', async (event, query) => {
   } catch (err) { return []; }
 });
 
-// NEW: Create File/Folder Handler
+// C. Create File/Folder
 ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -185,14 +181,70 @@ ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) =
   }
 });
 
+// D. Move File (Drag & Drop)
+ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentId }) => {
+  if (!authClient) return false;
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    await drive.files.update({
+      fileId: fileId,
+      addParents: newParentId,
+      removeParents: oldParentId,
+      fields: 'id, parents'
+    });
+    return true;
+  } catch (err) {
+    console.error("Move Error:", err);
+    throw err;
+  }
+});
+
+// E. Get File Details (Versions & Metadata)
+ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
+  if (!authClient) return null;
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    // 1. Get Basic Metadata
+    const fileReq = drive.files.get({
+      fileId: fileId,
+      fields: 'id, name, mimeType, size, createdTime, modifiedTime, owners(displayName, emailAddress)'
+    });
+
+    // 2. Get Revisions (Versions)
+    let revisions = [];
+    try {
+        const revRes = await drive.revisions.list({
+          fileId: fileId,
+          pageSize: 10, 
+          fields: 'revisions(id, modifiedTime, lastModifyingUser(displayName), originalFilename)'
+        });
+        revisions = revRes.data.revisions || [];
+    } catch (e) {
+        console.log("Could not fetch revisions:", e.message);
+    }
+
+    const fileRes = await fileReq;
+
+    return {
+      metadata: fileRes.data,
+      revisions: revisions.reverse() 
+    };
+  } catch (err) {
+    console.error("Details Error:", err);
+    throw err;
+  }
+});
+
 // ---------------------------------------------------------
-// 3. CONTEXT MENUS (Right Click)
+// 3. CONTEXT MENUS (The Listener for Right Click)
 // ---------------------------------------------------------
 
 ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
   const template = [];
 
-  // Creation Options (Only if it's a folder)
+  // 1. Creation Options (Only for Folders)
   if (isFolder) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
@@ -202,7 +254,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
     );
   }
 
-  // Standard Options
+  // 2. Open in Browser
   template.push({
     label: `Open "${name}" in Browser`,
     click: () => { if (link) shell.openExternal(link); }
@@ -210,6 +262,15 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
 
   template.push({ type: 'separator' });
 
+  // 3. View Details
+  template.push({
+    label: 'ℹ️ View Details & Versions',
+    click: () => sendAction(event, 'details', { id, name })
+  });
+
+  template.push({ type: 'separator' });
+
+  // 4. Copy Link
   template.push({
     label: isFolder ? 'Copy Folder Link' : 'Copy File Link',
     click: () => { if (link) clipboard.writeText(link); }
@@ -219,10 +280,12 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
+// Helper to send actions back to renderer
 function sendAction(event, action, data) {
   event.sender.send('menu-action', { action, data });
 }
 
+// Deep Link Menu (Right Pane)
 ipcMain.on('show-header-menu', (event, { url, text }) => {
   const template = [{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }];
   const menu = Menu.buildFromTemplate(template);
@@ -234,7 +297,6 @@ ipcMain.on('show-header-menu', (event, { url, text }) => {
 // ---------------------------------------------------------
 
 async function createWindow() {
-  // Attempt auto-login on startup
   loadSavedCredentials();
 
   win = new BrowserWindow({

@@ -8,12 +8,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const webview = document.getElementById('doc-view');
     const searchBox = document.getElementById('search-box');
     
-    // Modal Elements
+    // Create Modal Elements
     const modal = document.getElementById('name-modal');
     const modalTitle = document.getElementById('modal-title');
     const nameInput = document.getElementById('filename-input');
     const createBtn = document.getElementById('create-btn');
     const cancelBtn = document.getElementById('cancel-btn');
+
+    // Details Modal Elements
+    const detailsModal = document.getElementById('details-modal');
+    const detailsTitle = document.getElementById('details-title');
+    const metaTable = document.getElementById('meta-table-body');
+    const versionsList = document.getElementById('versions-list');
+    const closeDetailsBtn = document.getElementById('close-details-btn');
 
     // -- STATE --
     let searchTimeout = null;
@@ -101,11 +108,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 3. FILE CREATION (With Auto-Refresh)
+    // 3. MENU ACTIONS (CREATE & DETAILS)
     // =========================================================================
     
+    // Listen for Menu Actions from Main Process
     if (window.api.onMenuAction) {
-        window.api.onMenuAction(({ action, data }) => {
+        window.api.onMenuAction(async ({ action, data }) => {
+            
+            // --- ACTION: CREATE NEW ---
             if (action === 'create') {
                 pendingCreation = data;
                 
@@ -121,22 +131,79 @@ document.addEventListener('DOMContentLoaded', () => {
                     nameInput.focus();
                 }
             }
+
+            // --- ACTION: VIEW DETAILS ---
+            if (action === 'details') {
+                if (!detailsModal) return;
+                
+                detailsTitle.innerText = `Loading: ${data.name}...`;
+                detailsModal.style.display = 'flex';
+                metaTable.innerHTML = '';
+                versionsList.innerHTML = 'Fetching versions...';
+
+                try {
+                    const info = await window.api.getFileDetails(data.id);
+                    const meta = info.metadata;
+                    
+                    detailsTitle.innerText = meta.name;
+
+                    // Build Metadata Table
+                    const rows = [
+                        ['Type', meta.mimeType],
+                        ['Size', formatSize(meta.size)],
+                        ['Created', formatDate(meta.createdTime)],
+                        ['Modified', formatDate(meta.modifiedTime)],
+                        ['Owner', meta.owners ? meta.owners.map(o => o.displayName).join(', ') : 'Me']
+                    ];
+
+                    metaTable.innerHTML = rows.map(r => `
+                        <tr style="border-bottom: 1px solid #f0f0f0;">
+                            <td style="padding: 8px 0; font-weight: bold; width: 100px; color:#5f6368;">${r[0]}</td>
+                            <td style="padding: 8px 0;">${r[1]}</td>
+                        </tr>
+                    `).join('');
+
+                    // Build Versions List
+                    if (info.revisions && info.revisions.length > 0) {
+                        versionsList.innerHTML = info.revisions.map(rev => `
+                            <div style="padding: 8px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between;">
+                                <span>
+                                    <strong>${formatDate(rev.modifiedTime)}</strong> 
+                                    <span style="color:#666;"> - ${rev.lastModifyingUser?.displayName || 'Unknown'}</span>
+                                </span>
+                                <span style="font-family: monospace; background: #eee; padding: 2px 4px; border-radius: 3px;">
+                                    ID: ${rev.id.substring(0,6)}...
+                                </span>
+                            </div>
+                        `).join('');
+                    } else {
+                        versionsList.innerHTML = '<div style="padding:10px; color:#999;">No version history available.</div>';
+                    }
+
+                } catch (err) {
+                    console.error(err);
+                    versionsList.innerText = "Error loading details.";
+                }
+            }
         });
     }
 
+    // --- MODAL HANDLERS ---
+    
     function closeModal() {
         if (modal) modal.style.display = 'none';
         pendingCreation = null;
     }
 
     if (cancelBtn) cancelBtn.onclick = closeModal;
+    if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
 
     if (createBtn) {
         createBtn.onclick = async () => {
             const name = nameInput.value.trim();
-            // 1. Safety & Capture Data
-            if (!name || !pendingCreation) return;
             
+            // 1. Safety Check & Capture Data
+            if (!name || !pendingCreation) return;
             const parentId = pendingCreation.parentId;
             const type = pendingCreation.type;
 
@@ -145,10 +212,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (type === 'sheet') mimeType = 'application/vnd.google-apps.spreadsheet';
 
             status.innerText = `Creating "${name}"...`;
-            closeModal(); // Close UI immediately
+            
+            // 2. Close Modal
+            closeModal();
 
             try {
-                // 2. Create the file
+                // 3. Create File
                 await window.api.createFile({
                     parentId: parentId,
                     name: name,
@@ -157,8 +226,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 status.innerText = `Created ${name}. Refreshing folder...`;
 
-                // 3. AUTO-REFRESH LOGIC
-                // Find the parent folder in the DOM using the data-id we added
+                // 4. AUTO-REFRESH LOGIC
+                // Find parent folder and reload its children
                 const parentNode = document.querySelector(`.tree-node[data-id="${parentId}"]`);
                 
                 if (parentNode) {
@@ -166,14 +235,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const arrow = parentNode.querySelector('.tree-arrow');
 
                     if (childrenContainer) {
-                        // Force expansion visuals
                         childrenContainer.style.display = 'block'; 
                         if (arrow) {
                             arrow.innerText = '▼';
                             arrow.classList.add('rotated');
                         }
                         
-                        // Clear and Reload
                         childrenContainer.innerHTML = ''; 
                         const children = await window.api.listFiles(parentId);
                         
@@ -185,9 +252,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         status.innerText = 'Ready';
                     }
                 } else {
-                    // Fallback if we created something in Root or can't find folder
                     alert(`Created "${name}".`);
-                    init(); // Reload whole tree
+                    init(); // Reload whole tree if parent not found
                 }
                 
             } catch (err) {
@@ -204,8 +270,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // -- FORMAT HELPERS --
+    function formatDate(isoString) {
+        if (!isoString) return 'N/A';
+        return new Date(isoString).toLocaleString();
+    }
+    function formatSize(bytes) {
+        if (!bytes) return '-';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+
     // =========================================================================
-    // 4. LISTENERS
+    // 4. LISTENERS (IPC & SEARCH)
     // =========================================================================
 
     if (window.api.onAuthSuccess) {
@@ -253,7 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 5. TREE VIEW HELPERS
+    // 5. TREE VIEW HELPERS & DRAG-DROP
     // =========================================================================
     function getIcon(mimeType) {
       if (mimeType === 'application/vnd.google-apps.folder') return '📁';
@@ -270,11 +350,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const nodeContainer = document.createElement('div');
       
       nodeContainer.className = 'tree-node';
-      // IMPORTANT: Add the ID so we can find this folder later for refreshing!
       nodeContainer.dataset.id = file.id; 
+      
+      // Store current parent for drag logic
+      const currentParentId = (file.parents && file.parents.length > 0) ? file.parents[0] : 'root';
+      nodeContainer.dataset.parentId = currentParentId;
   
       const labelRow = document.createElement('div');
       labelRow.className = 'tree-label';
+      labelRow.draggable = true; // Enable Drag
       
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow';
@@ -294,6 +378,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const childrenContainer = document.createElement('div');
       childrenContainer.className = 'tree-children';
   
+      // --- CLICK HANDLER ---
       labelRow.onclick = async (e) => {
         e.stopPropagation();
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
@@ -337,6 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       };
 
+      // --- CONTEXT MENU (RIGHT CLICK) ---
       labelRow.addEventListener('contextmenu', (e) => {
         e.preventDefault(); 
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
@@ -349,6 +435,79 @@ document.addEventListener('DOMContentLoaded', () => {
             id: file.id 
         });
       });
+
+      // --- DRAG AND DROP HANDLERS ---
+      
+      // 1. Drag Start
+      labelRow.addEventListener('dragstart', (e) => {
+          e.stopPropagation();
+          const data = JSON.stringify({ id: file.id, oldParent: currentParentId, name: file.name });
+          e.dataTransfer.setData('application/json', data);
+          e.dataTransfer.effectAllowed = 'move';
+          labelRow.style.opacity = '0.5';
+      });
+
+      // 2. Drag End
+      labelRow.addEventListener('dragend', () => {
+          labelRow.style.opacity = '1';
+      });
+
+      // 3. Drop (Only on Folders)
+      if (isFolder) {
+          labelRow.addEventListener('dragover', (e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              labelRow.style.backgroundColor = '#d2e3fc';
+          });
+
+          labelRow.addEventListener('dragleave', () => {
+              labelRow.style.backgroundColor = '';
+              if (labelRow.classList.contains('selected')) labelRow.style.backgroundColor = '#e8f0fe';
+          });
+
+          labelRow.addEventListener('drop', async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              labelRow.style.backgroundColor = '';
+
+              const rawData = e.dataTransfer.getData('application/json');
+              if (!rawData) return;
+              
+              const draggedItem = JSON.parse(rawData);
+              
+              if (draggedItem.id === file.id) return;
+              if (draggedItem.oldParent === file.id) return;
+
+              const confirmMove = confirm(`Move "${draggedItem.name}" into "${file.name}"?`);
+              if (!confirmMove) return;
+
+              status.innerText = `Moving "${draggedItem.name}"...`;
+
+              try {
+                  await window.api.moveFile({
+                      fileId: draggedItem.id,
+                      oldParentId: draggedItem.oldParent,
+                      newParentId: file.id
+                  });
+
+                  status.innerText = `Moved! Refreshing...`;
+                  
+                  // UI Refresh: Remove old node
+                  const oldNode = document.querySelector(`.tree-node[data-id="${draggedItem.id}"]`);
+                  if (oldNode) oldNode.remove();
+                  
+                  // Reload new parent folder
+                  childrenContainer.innerHTML = ''; 
+                  childrenContainer.style.display = 'none'; 
+                  labelRow.click(); // Trigger click to expand/reload
+
+              } catch (err) {
+                  console.error(err);
+                  status.innerText = "Error moving file.";
+                  alert("Failed to move file.");
+              }
+          });
+      }
   
       nodeContainer.appendChild(labelRow);
       nodeContainer.appendChild(childrenContainer);

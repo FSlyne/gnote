@@ -1,12 +1,10 @@
-// renderer.js
-
+// renderer.js - WITH RIGHT-CLICK SUPPORT
 document.addEventListener('DOMContentLoaded', () => {
     
     const fileList = document.getElementById('file-list');
     const status = document.getElementById('status');
     const webview = document.getElementById('doc-view');
   
-    // Icon Helper
     function getIcon(mimeType) {
       if (mimeType === 'application/vnd.google-apps.folder') return '📁';
       if (mimeType.includes('spreadsheet')) return '📊';
@@ -17,32 +15,22 @@ document.addEventListener('DOMContentLoaded', () => {
       return '📄';
     }
   
-    // ---------------------------------------------------------
-    // Function: Create a Single Tree Node
-    // ---------------------------------------------------------
     function createTreeItem(file) {
       const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-  
-      // 1. Container
       const nodeContainer = document.createElement('div');
       nodeContainer.className = 'tree-node';
   
-      // 2. Label Row
       const labelRow = document.createElement('div');
       labelRow.className = 'tree-label';
       
-      // Arrow
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow';
-      // Only show arrow if it is a folder
       arrow.innerText = isFolder ? '▶' : ''; 
       
-      // Icon
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
       icon.innerText = getIcon(file.mimeType);
   
-      // Text
       const text = document.createElement('span');
       text.innerText = file.name;
   
@@ -50,25 +38,20 @@ document.addEventListener('DOMContentLoaded', () => {
       labelRow.appendChild(icon);
       labelRow.appendChild(text);
   
-      // 3. Children Container
       const childrenContainer = document.createElement('div');
       childrenContainer.className = 'tree-children';
   
-      // -------------------------------------------------------
-      // CLICK LOGIC
-      // -------------------------------------------------------
+      // LEFT CLICK LOGIC (Preview)
       labelRow.onclick = async (e) => {
         e.stopPropagation();
   
-        // Visual Selection
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         labelRow.classList.add('selected');
   
-        // CASE A: It's a File -> Open in WebView
         if (!isFolder && file.webViewLink) {
             status.innerText = `Loading: ${file.name}...`;
             
-            // Try to use 'preview' mode for cleaner embedding
+            // Force preview mode for safe viewing
             let link = file.webViewLink;
             if (link.includes('/view') || link.includes('/edit')) {
                  link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
@@ -82,25 +65,21 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
   
-        // CASE B: It's a Folder -> Toggle
         if (isFolder) {
             const isExpanded = childrenContainer.style.display === 'block';
   
             if (isExpanded) {
-                // Collapse
                 childrenContainer.style.display = 'none';
                 arrow.innerText = '▶';
                 arrow.classList.remove('rotated');
             } else {
-                // Expand
                 childrenContainer.style.display = 'block';
                 arrow.innerText = '▼';
                 arrow.classList.add('rotated');
   
-                // LAZY LOAD: If empty, fetch from API
                 if (childrenContainer.children.length === 0) {
                     const originalIcon = icon.innerText;
-                    icon.innerText = '⏳'; // Loading state
+                    icon.innerText = '⏳';
                     
                     try {
                         status.innerText = `Fetching contents of ${file.name}...`;
@@ -130,20 +109,31 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
       };
+
+      // RIGHT CLICK LOGIC (Open in Browser)
+      labelRow.addEventListener('contextmenu', (e) => {
+        e.preventDefault(); 
+        if (!isFolder) {
+            // Select the item visually
+            document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
+            labelRow.classList.add('selected');
+
+            // Trigger the native menu
+            window.api.showContextMenu({
+                name: file.name,
+                webViewLink: file.webViewLink
+            });
+        }
+      });
   
       nodeContainer.appendChild(labelRow);
       nodeContainer.appendChild(childrenContainer);
       return nodeContainer;
     }
   
-    // ---------------------------------------------------------
-    // Initial Load
-    // ---------------------------------------------------------
     async function init() {
       try {
         status.innerText = 'Waiting for Google sign-in...';
-        
-        // Fetch Root ('root')
         const rootFiles = await window.api.listFiles('root');
         
         status.innerText = `Loaded ${rootFiles.length} items from Root.`;
@@ -165,6 +155,5 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   
-    // Start
     init();
   });

@@ -1,11 +1,10 @@
-// main.js
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+// main.js - WITH RIGHT-CLICK MENU
+const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 const process = require('process');
 const { authenticate } = require('@google-cloud/local-auth');
 const { google } = require('googleapis');
 
-// Scopes required for reading file metadata and content
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.metadata.readonly',
   'https://www.googleapis.com/auth/drive.readonly' 
@@ -14,14 +13,13 @@ const SCOPES = [
 let win;
 let authClient = null;
 
-// Drive readiness gate
 let driveReadyResolve, driveReadyReject;
 const driveReady = new Promise((resolve, reject) => {
   driveReadyResolve = resolve;
   driveReadyReject = reject;
 });
 
-// IPC: List Files (Supports optional folderId for tree navigation)
+// IPC HANDLER: List Files
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) {
     try {
@@ -31,17 +29,14 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
     }
   }
 
-  // Force global auth options to ensure the token is attached
   google.options({ auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
   try {
     const res = await drive.files.list({
-      // Query: Children of the specific folder ID, not trashed
       q: `'${folderId}' in parents and trashed = false`,
       pageSize: 100,
       fields: 'files(id, name, mimeType, webViewLink, iconLink)',
-      // Sort folders to the top, then alphabetically
       orderBy: 'folder, name', 
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
@@ -54,6 +49,22 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   }
 });
 
+// NEW: Context Menu Handler (Right-Click)
+ipcMain.on('show-context-menu', (event, file) => {
+  const template = [
+    {
+      label: `Open "${file.name}" in Browser`,
+      click: () => {
+        if (file.webViewLink) {
+          shell.openExternal(file.webViewLink);
+        }
+      }
+    }
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1200,
@@ -63,18 +74,16 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true // ENABLED for viewing Google Docs
+      webviewTag: true 
     }
   });
 
   win.loadFile('index.html');
 
-  // Show window immediately
   win.once('ready-to-show', () => {
     win.show();
   });
 
-  // Handle "Open in New Window" events from the WebView
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://accounts.google.com') || url.startsWith('https://docs.google.com')) {
       return { action: 'allow' };
@@ -82,27 +91,19 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
-  win.webContents.on('did-attach-webview', (event, webContents) => {
-    webContents.setWindowOpenHandler(({ url }) => {
-      return { action: 'allow' };
-    });
-  });
-
   try {
-    // 1. Perform Local Auth
     const localAuth = await authenticate({
       keyfilePath: path.join(__dirname, 'credentials.json'),
       scopes: SCOPES,
     });
 
-    // 2. Rebuild Auth Client (Fix for "Unregistered Caller" error)
     const credentials = require('./credentials.json'); 
-    const { client_id, client_secret, redirect_uris } = credentials.installed || credentials.web;
+    const keys = credentials.installed || credentials.web;
 
     const oauth2Client = new google.auth.OAuth2(
-      client_id,
-      client_secret,
-      redirect_uris[0]
+      keys.client_id,
+      keys.client_secret,
+      keys.redirect_uris[0]
     );
 
     oauth2Client.setCredentials(localAuth.credentials);

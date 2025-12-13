@@ -5,6 +5,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const status = document.getElementById('status');
     const webview = document.getElementById('doc-view');
   
+// NEW: Listen for messages from the webview-preload.js
+    webview.addEventListener('ipc-message', (event) => {
+        if (event.channel === 'header-context-menu') {
+            // event.args[0] contains the { url, text } object we sent
+            const data = event.args[0];
+            
+            // Tell the main process to show the menu
+            window.api.showHeaderMenu(data);
+        }
+    });
+
     function getIcon(mimeType) {
       if (mimeType === 'application/vnd.google-apps.folder') return '📁';
       if (mimeType.includes('spreadsheet')) return '📊';

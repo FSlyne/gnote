@@ -65,6 +65,23 @@ ipcMain.on('show-context-menu', (event, file) => {
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
+// main.js
+
+// NEW: Handle Deep Link Context Menu
+ipcMain.on('show-header-menu', (event, { url, text }) => {
+  const { clipboard } = require('electron'); // Ensure clipboard is imported
+  const template = [
+    {
+      label: `Copy Link to Header: "${text}..."`,
+      click: () => {
+        clipboard.writeText(url);
+      }
+    }
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1200,

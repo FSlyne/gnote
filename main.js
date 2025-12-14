@@ -119,7 +119,7 @@ ipcMain.handle('auth:openWebLogin', async () => {
   }
 });
 
-// A. List Files (Updated with 'parents' field for Drag & Drop)
+// A. List Files
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) loadSavedCredentials();
   if (!authClient) return []; 
@@ -143,7 +143,7 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   }
 });
 
-// B. Search Files (Updated for Content Search AND Parent Location)
+// B. Search Files
 ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -156,7 +156,6 @@ ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
     const res = await drive.files.list({
       q: qString,
       pageSize: 20,
-      // Added 'parents' so we can open file location
       fields: 'files(id, name, mimeType, webViewLink, iconLink, parents)',
     });
     return res.data.files ?? [];
@@ -190,7 +189,7 @@ ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) =
   }
 });
 
-// D. Move File (Drag & Drop)
+// D. Move File
 ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentId }) => {
   if (!authClient) return false;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -209,7 +208,8 @@ ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentI
   }
 });
 
-// E. Get File Details (Versions & Metadata & Parent Name)
+// E. Get File Details
+// main.js - UPDATED DETAILS HANDLER (With Full Path Calculation)
 ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -237,18 +237,46 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
     const fileRes = await fileReq;
     const meta = fileRes.data;
 
-    // 3. Fetch Parent Name (For Details view)
-    let parentName = 'Root';
+    // 3. CALCULATE FULL PATH (Recursive Loop)
+    let pathString = 'Unknown';
     if (meta.parents && meta.parents.length > 0) {
-        try {
-            const parentRes = await drive.files.get({
-                fileId: meta.parents[0],
-                fields: 'name'
-            });
-            parentName = parentRes.data.name;
-        } catch (e) { parentName = 'Unknown'; }
+        const pathParts = [];
+        let currentParentId = meta.parents[0];
+        let safetyCounter = 0;
+
+        // Loop up to 10 levels deep to prevent infinite waits
+        while (currentParentId && safetyCounter < 10) {
+            try {
+                // If we hit the absolute root, stop
+                if (currentParentId === 'root') {
+                    pathParts.unshift('My Drive');
+                    break;
+                }
+
+                // Get details of this parent folder
+                const folder = await drive.files.get({
+                    fileId: currentParentId,
+                    fields: 'id, name, parents'
+                });
+
+                pathParts.unshift(folder.data.name);
+                
+                // Move up one level
+                if (folder.data.parents && folder.data.parents.length > 0) {
+                    currentParentId = folder.data.parents[0];
+                } else {
+                    currentParentId = null; // No more parents
+                }
+            } catch (e) {
+                console.log("Path error:", e.message);
+                break;
+            }
+            safetyCounter++;
+        }
+        pathString = pathParts.join(' / ');
     }
-    meta.parentName = parentName;
+    
+    meta.fullPath = pathString; // Store it here
 
     return {
       metadata: meta,
@@ -260,14 +288,37 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   }
 });
 
+// F. Get File Comments (THIS WAS MISSING!)
+ipcMain.handle('drive:getFileComments', async (event, fileId) => {
+  if (!authClient) return [];
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    const res = await drive.comments.list({
+      fileId: fileId,
+      fields: 'comments(id, content, author(displayName), createdTime, replies(id, content, author(displayName), createdTime))',
+      pageSize: 100
+    });
+    return res.data.comments || [];
+  } catch (err) {
+    console.error("Comments Error:", err);
+    return [];
+  }
+});
+
+// G. Open External Link (THIS WAS MISSING!)
+ipcMain.handle('shell:openExternal', (event, url) => {
+  shell.openExternal(url);
+});
+
 // ---------------------------------------------------------
-// 3. CONTEXT MENUS (Right Click)
+// 3. CONTEXT MENUS
 // ---------------------------------------------------------
 
 ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId }) => {
   const template = [];
 
-  // 1. Open File Location (Only if we know the parent)
+  // Open File Location
   if (parentId && parentId !== 'root') {
       template.push({
           label: '📂 Open File Location',
@@ -279,7 +330,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId }) 
       template.push({ type: 'separator' });
   }
 
-  // 2. Creation Options (Only for Folders)
+  // Creation Options
   if (isFolder) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
@@ -289,23 +340,37 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId }) 
     );
   }
 
-  // 3. Open in Browser
+// [REPLACED] Old "Open in Browser" -> New "Edit in App"
   template.push({
-    label: `Open "${name}" in Browser`,
+    label: '✏️ Edit in App',
+    click: () => sendAction(event, 'edit', { id, name, link }) 
+  });
+
+  // Optional: Keep "Open in Browser" as a backup (just in case)
+  template.push({
+    label: '🌐 Open in Browser',
     click: () => { if (link) shell.openExternal(link); }
   });
 
   template.push({ type: 'separator' });
 
-  // 4. View Details
+  template.push({ type: 'separator' });
+
+  // View Details
   template.push({
     label: 'ℹ️ View Details & Versions',
     click: () => sendAction(event, 'details', { id, name })
   });
 
+  // View Comments
+  template.push({
+    label: '💬 View Comments',
+    click: () => sendAction(event, 'comments', { id, name })
+  });
+
   template.push({ type: 'separator' });
 
-  // 5. Copy Link
+  // Copy Link
   template.push({
     label: isFolder ? 'Copy Folder Link' : 'Copy File Link',
     click: () => { if (link) clipboard.writeText(link); }
@@ -315,12 +380,10 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId }) 
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
-// Helper to send actions back to renderer
 function sendAction(event, action, data) {
   event.sender.send('menu-action', { action, data });
 }
 
-// Deep Link Menu (Right Pane)
 ipcMain.on('show-header-menu', (event, { url, text }) => {
   const template = [{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }];
   const menu = Menu.buildFromTemplate(template);

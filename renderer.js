@@ -7,20 +7,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const status = document.getElementById('status');
     const webview = document.getElementById('doc-view');
     const searchBox = document.getElementById('search-box');
+    const searchContentCheck = document.getElementById('search-content-check');
     
-    // Create Modal Elements
+    // MODAL ELEMENTS
     const modal = document.getElementById('name-modal');
     const modalTitle = document.getElementById('modal-title');
     const nameInput = document.getElementById('filename-input');
     const createBtn = document.getElementById('create-btn');
     const cancelBtn = document.getElementById('cancel-btn');
 
-    // Details Modal Elements
+    // DETAILS MODAL ELEMENTS
     const detailsModal = document.getElementById('details-modal');
     const detailsTitle = document.getElementById('details-title');
     const metaTable = document.getElementById('meta-table-body');
     const versionsList = document.getElementById('versions-list');
     const closeDetailsBtn = document.getElementById('close-details-btn');
+
+    // COMMENTS MODAL ELEMENTS
+    const commentsModal = document.getElementById('comments-modal');
+    const commentsTitle = document.getElementById('comments-title');
+    const commentsList = document.getElementById('comments-list');
+    const closeCommentsBtn = document.getElementById('close-comments-btn');
 
     // -- STATE --
     let searchTimeout = null;
@@ -28,7 +35,86 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_RECENT = 10;
 
     // =========================================================================
-    // 1. RECENT FILES SYSTEM
+    // 1. HELPER FUNCTIONS (Formatting, Links, Jumping)
+    // =========================================================================
+    
+    function formatDate(isoString) {
+        if (!isoString) return 'N/A';
+        return new Date(isoString).toLocaleString();
+    }
+
+    function formatSize(bytes) {
+        if (!bytes) return '-';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function getIcon(mimeType) {
+        if (mimeType === 'application/vnd.google-apps.folder') return '📁';
+        if (mimeType.includes('spreadsheet')) return '📊';
+        if (mimeType.includes('document')) return '📝';
+        if (mimeType.includes('presentation')) return '📑';
+        if (mimeType.includes('pdf')) return '📕';
+        if (mimeType.includes('image')) return '🖼️';
+        return '📄';
+    }
+
+    function linkify(text) {
+        if (!text) return '';
+        const urlRegex = /(\b(https?):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
+        return text.replace(urlRegex, function(url) {
+            return `<a href="#" onclick="window.api.openExternal('${url}'); return false;" style="color:#1a73e8; text-decoration:underline;">${url}</a>`;
+        });
+    }
+
+    // EXPOSE JUMP FUNCTION TO WINDOW (So HTML onclick can see it)
+    window.jumpToComment = (fileId, commentId) => {
+        const webview = document.getElementById('doc-view');
+        const commentsModal = document.getElementById('comments-modal');
+        
+        // Construct Deep Link with 'disco' (discussion) param
+        const deepLink = `https://docs.google.com/document/d/${fileId}/edit?disco=${commentId}`;
+        
+        status.innerText = "Locating comment...";
+        webview.src = deepLink;
+        
+        commentsModal.style.display = 'none';
+    };
+
+    function createCommentHTML(comment, fileId) {
+        const date = new Date(comment.createdTime).toLocaleString();
+        const author = comment.author ? comment.author.displayName : 'Unknown';
+        const content = linkify(comment.content); 
+
+        // The "Locate" Button
+        const jumpButton = `
+            <button 
+                onclick="window.jumpToComment('${fileId}', '${comment.id}')"
+                style="float: right; border: 1px solid #dadce0; background: #fff; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: #1a73e8;">
+                🎯 Locate
+            </button>
+        `;
+
+        return `
+            <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f0;">
+                <div style="font-size: 12px; color: #5f6368; margin-bottom: 4px; display: flex; justify-content: space-between;">
+                    <span><strong>${author}</strong> • ${date}</span>
+                    ${jumpButton}
+                </div>
+                <div style="font-size: 14px; color: #202124; white-space: pre-wrap; margin-top: 5px;">${content}</div>
+                ${comment.replies && comment.replies.length > 0 ? 
+                    `<div style="margin-left: 15px; margin-top: 8px; border-left: 2px solid #ddd; padding-left: 10px;">
+                        ${comment.replies.map(reply => createCommentHTML(reply, fileId)).join('')}
+                    </div>` 
+                : ''}
+            </div>
+        `;
+    }
+
+    // =========================================================================
+    // 2. RECENT FILES SYSTEM
     // =========================================================================
     function loadRecents() {
         const data = localStorage.getItem('recentFiles');
@@ -87,7 +173,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 2. FILE OPENING & PREVIEW
+    // 3. FILE OPENING & PREVIEW
     // =========================================================================
     function openFile(file) {
         if (!file.webViewLink) return;
@@ -95,6 +181,7 @@ document.addEventListener('DOMContentLoaded', () => {
         status.innerText = `Loading: ${file.name}...`;
         let link = file.webViewLink;
         
+        // Convert Edit/View links to Preview mode (unless jumping to comment)
         if (link.includes('/view') || link.includes('/edit')) {
              link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
         }
@@ -108,16 +195,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 3. MENU ACTIONS (CREATE & DETAILS)
+    // 4. MENU ACTIONS
     // =========================================================================
     
-    // Listen for Menu Actions from Main Process
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
+
+            // --- NEW ACTION: EDIT IN APP ---
+            if (action === 'edit') {
+                status.innerText = `Opening editor for: ${data.name}...`;
+                
+                let editLink = data.link;
+                
+                // Force the URL to be an 'edit' URL
+                if (editLink.includes('/view') || editLink.includes('/preview')) {
+                    editLink = editLink.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
+                }
+                
+                // Load it into the main view
+                webview.src = editLink;
+            }
             
             // --- ACTION: CREATE NEW ---
             if (action === 'create') {
-                pendingCreation = data;
+                pendingCreation = data; // <--- CRITICAL: Store data for later
                 
                 let typeName = "File";
                 if (data.type === 'folder') typeName = "Folder";
@@ -147,10 +248,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     detailsTitle.innerText = meta.name;
 
-                // Build Metadata Table
                     const rows = [
                         ['Type', meta.mimeType],
-                        ['Location', meta.parentName || 'Root'], // <--- NEW ROW
+                        // CHANGED: Use fullPath, and allow it to wrap/scroll if long
+                        ['Location', `<span style="font-size:11px; color:#1a73e8;">${meta.fullPath || 'Root'}</span>`], 
                         ['Size', formatSize(meta.size)],
                         ['Created', formatDate(meta.createdTime)],
                         ['Modified', formatDate(meta.modifiedTime)],
@@ -164,7 +265,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         </tr>
                     `).join('');
 
-                    // Build Versions List
                     if (info.revisions && info.revisions.length > 0) {
                         versionsList.innerHTML = info.revisions.map(rev => `
                             <div style="padding: 8px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between;">
@@ -186,11 +286,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     versionsList.innerText = "Error loading details.";
                 }
             }
+
+            // --- ACTION: VIEW COMMENTS ---
+            if (action === 'comments') {
+                if (!commentsModal) return;
+                
+                commentsTitle.innerText = `Comments: ${data.name}`;
+                commentsList.innerHTML = '<div style="color:#666;">Loading comments...</div>';
+                commentsModal.style.display = 'flex';
+
+                try {
+                    const comments = await window.api.getFileComments(data.id);
+                    
+                    if (comments.length === 0) {
+                        commentsList.innerHTML = '<div style="padding:10px; color:#999; text-align:center;">No comments found.</div>';
+                    } else {
+                        commentsList.innerHTML = comments.map(c => createCommentHTML(c, data.id)).join('');
+                    }
+                } catch (err) {
+                    console.error(err);
+                    commentsList.innerText = "Error loading comments.";
+                }
+            }
         });
     }
 
-    // --- MODAL HANDLERS ---
-    
+    // --- MODAL CLOSING ---
     function closeModal() {
         if (modal) modal.style.display = 'none';
         pendingCreation = null;
@@ -198,13 +319,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (cancelBtn) cancelBtn.onclick = closeModal;
     if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
+    if (closeCommentsBtn) closeCommentsBtn.onclick = () => { commentsModal.style.display = 'none'; };
 
+    // --- FILE CREATION LOGIC (FIXED) ---
     if (createBtn) {
         createBtn.onclick = async () => {
             const name = nameInput.value.trim();
+            // SAFETY CHECK: Ensure we have data before proceeding
+            if (!name || !pendingCreation) return; 
             
-            // 1. Safety Check & Capture Data
-            if (!name || !pendingCreation) return;
             const parentId = pendingCreation.parentId;
             const type = pendingCreation.type;
 
@@ -213,12 +336,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (type === 'sheet') mimeType = 'application/vnd.google-apps.spreadsheet';
 
             status.innerText = `Creating "${name}"...`;
-            
-            // 2. Close Modal
             closeModal();
 
             try {
-                // 3. Create File
                 await window.api.createFile({
                     parentId: parentId,
                     name: name,
@@ -227,36 +347,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 status.innerText = `Created ${name}. Refreshing folder...`;
 
-                // 4. AUTO-REFRESH LOGIC
-                // Find parent folder and reload its children
                 const parentNode = document.querySelector(`.tree-node[data-id="${parentId}"]`);
-                
                 if (parentNode) {
                     const childrenContainer = parentNode.querySelector('.tree-children');
                     const arrow = parentNode.querySelector('.tree-arrow');
-
                     if (childrenContainer) {
                         childrenContainer.style.display = 'block'; 
-                        if (arrow) {
-                            arrow.innerText = '▼';
-                            arrow.classList.add('rotated');
-                        }
-                        
+                        if (arrow) { arrow.innerText = '▼'; arrow.classList.add('rotated'); }
                         childrenContainer.innerHTML = ''; 
                         const children = await window.api.listFiles(parentId);
-                        
-                        if (children.length === 0) {
-                            childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
-                        } else {
-                            children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
-                        }
+                        if (children.length === 0) childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
+                        else children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
                         status.innerText = 'Ready';
                     }
                 } else {
                     alert(`Created "${name}".`);
-                    init(); // Reload whole tree if parent not found
+                    init(); 
                 }
-                
             } catch (err) {
                 console.error(err);
                 status.innerText = "Error creating file.";
@@ -271,22 +378,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // -- FORMAT HELPERS --
-    function formatDate(isoString) {
-        if (!isoString) return 'N/A';
-        return new Date(isoString).toLocaleString();
-    }
-    function formatSize(bytes) {
-        if (!bytes) return '-';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-
     // =========================================================================
-    // 4. LISTENERS (IPC & SEARCH)
+    // 5. LISTENERS & SEARCH
     // =========================================================================
 
     if (window.api.onAuthSuccess) {
@@ -303,33 +396,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-// renderer.js - Update the Search Listener
-
-    // Get the new checkbox element
-    const searchContentCheck = document.getElementById('search-content-check');
-
     if (searchBox) {
-        // Function to perform search (reused for both typing and clicking checkbox)
         const performSearch = () => {
             const query = searchBox.value.trim();
-            const searchContent = searchContentCheck.checked; // Get True/False
+            const searchContent = searchContentCheck ? searchContentCheck.checked : false;
 
             if (searchTimeout) clearTimeout(searchTimeout);
 
-            if (query.length === 0) {
-                init(); 
-                return;
-            }
+            if (query.length === 0) { init(); return; }
 
             searchTimeout = setTimeout(async () => {
                 const modeText = searchContent ? "names & content" : "names only";
                 status.innerText = `Searching ${modeText} for "${query}"...`;
-                
                 fileList.innerHTML = ''; 
                 try {
-                    // Pass BOTH query and boolean flag
                     const results = await window.api.searchFiles(query, searchContent);
-                    
                     if (results.length === 0) {
                         fileList.innerHTML = '<div style="padding:15px; color:#666;">No results found.</div>';
                         status.innerText = 'No results.';
@@ -344,44 +425,30 @@ document.addEventListener('DOMContentLoaded', () => {
             }, 500);
         };
 
-        // Listen for typing
         searchBox.addEventListener('input', performSearch);
-        
-        // Listen for checkbox changes (re-run search immediately if they check/uncheck it)
-        searchContentCheck.addEventListener('change', () => {
-            if (searchBox.value.trim().length > 0) {
-                performSearch();
-            }
-        });
+        if (searchContentCheck) {
+            searchContentCheck.addEventListener('change', () => {
+                if (searchBox.value.trim().length > 0) performSearch();
+            });
+        }
     }
 
     // =========================================================================
-    // 5. TREE VIEW HELPERS & DRAG-DROP
+    // 6. TREE VIEW & DRAG/DROP
     // =========================================================================
-    function getIcon(mimeType) {
-      if (mimeType === 'application/vnd.google-apps.folder') return '📁';
-      if (mimeType.includes('spreadsheet')) return '📊';
-      if (mimeType.includes('document')) return '📝';
-      if (mimeType.includes('presentation')) return '📑';
-      if (mimeType.includes('pdf')) return '📕';
-      if (mimeType.includes('image')) return '🖼️';
-      return '📄';
-    }
-  
+    
     function createTreeItem(file) {
       const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
       const nodeContainer = document.createElement('div');
-      
       nodeContainer.className = 'tree-node';
       nodeContainer.dataset.id = file.id; 
       
-      // Store current parent for drag logic
       const currentParentId = (file.parents && file.parents.length > 0) ? file.parents[0] : 'root';
       nodeContainer.dataset.parentId = currentParentId;
   
       const labelRow = document.createElement('div');
       labelRow.className = 'tree-label';
-      labelRow.draggable = true; // Enable Drag
+      labelRow.draggable = true; 
       
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow';
@@ -401,16 +468,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const childrenContainer = document.createElement('div');
       childrenContainer.className = 'tree-children';
   
-      // --- CLICK HANDLER ---
       labelRow.onclick = async (e) => {
         e.stopPropagation();
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         labelRow.classList.add('selected');
   
-        if (!isFolder) {
-            openFile(file);
-            return;
-        }
+        if (!isFolder) { openFile(file); return; }
   
         if (isFolder) {
             const isExpanded = childrenContainer.style.display === 'block';
@@ -428,11 +491,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     try {
                         status.innerText = `Fetching contents of ${file.name}...`;
                         const children = await window.api.listFiles(file.id);
-                        if (children.length === 0) {
-                            childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
-                        } else {
-                            children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
-                        }
+                        if (children.length === 0) childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
+                        else children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
                         status.innerText = 'Ready';
                     } catch (err) {
                         console.error(err);
@@ -445,28 +505,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       };
 
-      // --- CONTEXT MENU (RIGHT CLICK) ---
-// --- CONTEXT MENU (RIGHT CLICK) ---
       labelRow.addEventListener('contextmenu', (e) => {
         e.preventDefault(); 
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         labelRow.classList.add('selected');
         
-        // 1. EXTRACT PARENT ID
-        const parentId = (file.parents && file.parents.length > 0) ? file.parents[0] : null;
-
-        // 2. SEND TO MAIN
         window.api.showContextMenu({
             name: file.name,
             link: file.webViewLink,
             isFolder: isFolder,
             id: file.id,
-            parentId: parentId // <--- Ensure this is being passed!
+            parentId: currentParentId
         });
       });
-      // --- DRAG AND DROP HANDLERS ---
-      
-      // 1. Drag Start
+
       labelRow.addEventListener('dragstart', (e) => {
           e.stopPropagation();
           const data = JSON.stringify({ id: file.id, oldParent: currentParentId, name: file.name });
@@ -475,24 +527,18 @@ document.addEventListener('DOMContentLoaded', () => {
           labelRow.style.opacity = '0.5';
       });
 
-      // 2. Drag End
-      labelRow.addEventListener('dragend', () => {
-          labelRow.style.opacity = '1';
-      });
+      labelRow.addEventListener('dragend', () => { labelRow.style.opacity = '1'; });
 
-      // 3. Drop (Only on Folders)
       if (isFolder) {
           labelRow.addEventListener('dragover', (e) => {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               labelRow.style.backgroundColor = '#d2e3fc';
           });
-
           labelRow.addEventListener('dragleave', () => {
               labelRow.style.backgroundColor = '';
               if (labelRow.classList.contains('selected')) labelRow.style.backgroundColor = '#e8f0fe';
           });
-
           labelRow.addEventListener('drop', async (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -502,7 +548,6 @@ document.addEventListener('DOMContentLoaded', () => {
               if (!rawData) return;
               
               const draggedItem = JSON.parse(rawData);
-              
               if (draggedItem.id === file.id) return;
               if (draggedItem.oldParent === file.id) return;
 
@@ -519,15 +564,12 @@ document.addEventListener('DOMContentLoaded', () => {
                   });
 
                   status.innerText = `Moved! Refreshing...`;
-                  
-                  // UI Refresh: Remove old node
                   const oldNode = document.querySelector(`.tree-node[data-id="${draggedItem.id}"]`);
                   if (oldNode) oldNode.remove();
                   
-                  // Reload new parent folder
                   childrenContainer.innerHTML = ''; 
                   childrenContainer.style.display = 'none'; 
-                  labelRow.click(); // Trigger click to expand/reload
+                  labelRow.click(); 
 
               } catch (err) {
                   console.error(err);
@@ -543,7 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   
     // =========================================================================
-    // 6. INITIALIZATION
+    // 7. INITIALIZATION
     // =========================================================================
     async function init() {
       const oldBtn = document.getElementById('login-btn');

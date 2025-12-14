@@ -11,6 +11,9 @@ searchFiles: (query, searchContent) => ipcRenderer.invoke('drive:searchFiles', {
   // preload.js
 // Add this line to your api object:
 getFileDetails: (fileId) => ipcRenderer.invoke('drive:getFileDetails', fileId),
+// preload.js - Add these to your 'api' object:
+getFileComments: (fileId) => ipcRenderer.invoke('drive:getFileComments', fileId),
+openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   
   // THIS LINE IS REQUIRED FOR THE BUTTON TO WORK:
   openWebLogin: () => ipcRenderer.invoke('auth:openWebLogin'), 

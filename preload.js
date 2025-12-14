@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   listFiles: (folderId) => ipcRenderer.invoke('drive:listFiles', folderId),
-  searchFiles: (query) => ipcRenderer.invoke('drive:searchFiles', query),
+// preload.js - Update this line
+searchFiles: (query, searchContent) => ipcRenderer.invoke('drive:searchFiles', { query, searchContent }),
   createFile: (data) => ipcRenderer.invoke('drive:createFile', data),
   // preload.js - Add this line to your list
   moveFile: (data) => ipcRenderer.invoke('drive:moveFile', data),

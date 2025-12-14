@@ -147,9 +147,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     detailsTitle.innerText = meta.name;
 
-                    // Build Metadata Table
+                // Build Metadata Table
                     const rows = [
                         ['Type', meta.mimeType],
+                        ['Location', meta.parentName || 'Root'], // <--- NEW ROW
                         ['Size', formatSize(meta.size)],
                         ['Created', formatDate(meta.createdTime)],
                         ['Modified', formatDate(meta.modifiedTime)],
@@ -302,9 +303,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+// renderer.js - Update the Search Listener
+
+    // Get the new checkbox element
+    const searchContentCheck = document.getElementById('search-content-check');
+
     if (searchBox) {
-        searchBox.addEventListener('input', (e) => {
-            const query = e.target.value.trim();
+        // Function to perform search (reused for both typing and clicking checkbox)
+        const performSearch = () => {
+            const query = searchBox.value.trim();
+            const searchContent = searchContentCheck.checked; // Get True/False
+
             if (searchTimeout) clearTimeout(searchTimeout);
 
             if (query.length === 0) {
@@ -313,10 +322,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             searchTimeout = setTimeout(async () => {
-                status.innerText = `Searching for "${query}"...`;
+                const modeText = searchContent ? "names & content" : "names only";
+                status.innerText = `Searching ${modeText} for "${query}"...`;
+                
                 fileList.innerHTML = ''; 
                 try {
-                    const results = await window.api.searchFiles(query);
+                    // Pass BOTH query and boolean flag
+                    const results = await window.api.searchFiles(query, searchContent);
+                    
                     if (results.length === 0) {
                         fileList.innerHTML = '<div style="padding:15px; color:#666;">No results found.</div>';
                         status.innerText = 'No results.';
@@ -329,6 +342,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     status.innerText = "Search failed.";
                 }
             }, 500);
+        };
+
+        // Listen for typing
+        searchBox.addEventListener('input', performSearch);
+        
+        // Listen for checkbox changes (re-run search immediately if they check/uncheck it)
+        searchContentCheck.addEventListener('change', () => {
+            if (searchBox.value.trim().length > 0) {
+                performSearch();
+            }
         });
     }
 
@@ -423,19 +446,24 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       // --- CONTEXT MENU (RIGHT CLICK) ---
+// --- CONTEXT MENU (RIGHT CLICK) ---
       labelRow.addEventListener('contextmenu', (e) => {
         e.preventDefault(); 
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         labelRow.classList.add('selected');
         
+        // 1. EXTRACT PARENT ID
+        const parentId = (file.parents && file.parents.length > 0) ? file.parents[0] : null;
+
+        // 2. SEND TO MAIN
         window.api.showContextMenu({
             name: file.name,
             link: file.webViewLink,
             isFolder: isFolder,
-            id: file.id 
+            id: file.id,
+            parentId: parentId // <--- Ensure this is being passed!
         });
       });
-
       // --- DRAG AND DROP HANDLERS ---
       
       // 1. Drag Start

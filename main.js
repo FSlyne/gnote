@@ -143,18 +143,27 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   }
 });
 
-// B. Search Files
-ipcMain.handle('drive:searchFiles', async (event, query) => {
+// B. Search Files (Updated for Content Search AND Parent Location)
+ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
+  
   try {
+    const qString = searchContent 
+      ? `fullText contains '${query}' and trashed = false`
+      : `name contains '${query}' and trashed = false`;
+
     const res = await drive.files.list({
-      q: `name contains '${query}' and trashed = false`,
+      q: qString,
       pageSize: 20,
-      fields: 'files(id, name, mimeType, webViewLink, iconLink)',
+      // Added 'parents' so we can open file location
+      fields: 'files(id, name, mimeType, webViewLink, iconLink, parents)',
     });
     return res.data.files ?? [];
-  } catch (err) { return []; }
+  } catch (err) { 
+    console.error("Search Error:", err);
+    return []; 
+  }
 });
 
 // C. Create File/Folder
@@ -200,7 +209,7 @@ ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentI
   }
 });
 
-// E. Get File Details (Versions & Metadata)
+// E. Get File Details (Versions & Metadata & Parent Name)
 ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -209,10 +218,10 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
     // 1. Get Basic Metadata
     const fileReq = drive.files.get({
       fileId: fileId,
-      fields: 'id, name, mimeType, size, createdTime, modifiedTime, owners(displayName, emailAddress)'
+      fields: 'id, name, mimeType, size, createdTime, modifiedTime, owners(displayName, emailAddress), parents'
     });
 
-    // 2. Get Revisions (Versions)
+    // 2. Get Revisions
     let revisions = [];
     try {
         const revRes = await drive.revisions.list({
@@ -226,9 +235,23 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
     }
 
     const fileRes = await fileReq;
+    const meta = fileRes.data;
+
+    // 3. Fetch Parent Name (For Details view)
+    let parentName = 'Root';
+    if (meta.parents && meta.parents.length > 0) {
+        try {
+            const parentRes = await drive.files.get({
+                fileId: meta.parents[0],
+                fields: 'name'
+            });
+            parentName = parentRes.data.name;
+        } catch (e) { parentName = 'Unknown'; }
+    }
+    meta.parentName = parentName;
 
     return {
-      metadata: fileRes.data,
+      metadata: meta,
       revisions: revisions.reverse() 
     };
   } catch (err) {
@@ -238,13 +261,25 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
 });
 
 // ---------------------------------------------------------
-// 3. CONTEXT MENUS (The Listener for Right Click)
+// 3. CONTEXT MENUS (Right Click)
 // ---------------------------------------------------------
 
-ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
+ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId }) => {
   const template = [];
 
-  // 1. Creation Options (Only for Folders)
+  // 1. Open File Location (Only if we know the parent)
+  if (parentId && parentId !== 'root') {
+      template.push({
+          label: '📂 Open File Location',
+          click: () => {
+              const folderUrl = `https://drive.google.com/drive/folders/${parentId}`;
+              shell.openExternal(folderUrl);
+          }
+      });
+      template.push({ type: 'separator' });
+  }
+
+  // 2. Creation Options (Only for Folders)
   if (isFolder) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
@@ -254,7 +289,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
     );
   }
 
-  // 2. Open in Browser
+  // 3. Open in Browser
   template.push({
     label: `Open "${name}" in Browser`,
     click: () => { if (link) shell.openExternal(link); }
@@ -262,7 +297,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
 
   template.push({ type: 'separator' });
 
-  // 3. View Details
+  // 4. View Details
   template.push({
     label: 'ℹ️ View Details & Versions',
     click: () => sendAction(event, 'details', { id, name })
@@ -270,7 +305,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id }) => {
 
   template.push({ type: 'separator' });
 
-  // 4. Copy Link
+  // 5. Copy Link
   template.push({
     label: isFolder ? 'Copy Folder Link' : 'Copy File Link',
     click: () => { if (link) clipboard.writeText(link); }

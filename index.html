@@ -64,9 +64,14 @@
   <div id="sidebar">
     <div id="status">Initializing...</div>
     
-    <div style="padding: 10px; border-bottom: 1px solid #dadce0;">
+<div style="padding: 10px; border-bottom: 1px solid #dadce0;">
         <input type="text" id="search-box" placeholder="🔍 Search Drive..." 
                style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
+        
+        <div style="margin-top: 6px; display: flex; align-items: center;">
+            <input type="checkbox" id="search-content-check" style="margin: 0 6px 0 2px;">
+            <label for="search-content-check" style="font-size: 12px; color: #5f6368; cursor: pointer;">Search inside files</label>
+        </div>
     </div>
 
     <div id="file-list"></div>

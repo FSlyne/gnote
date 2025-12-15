@@ -7,7 +7,7 @@ Thumbs.db
 
 # Environment variables and secrets
 .env
-credentials.json
+credentials*.json
 token.json
 
 # Local build logs

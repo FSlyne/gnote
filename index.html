@@ -1,140 +1,100 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <title>Google Drive Explorer</title>
-  <style>
-    body { 
-      margin: 0; 
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-      display: flex; 
-      height: 100vh; 
-      overflow: hidden; 
-    }
-    
-    #sidebar {
-      width: 320px;
-      background: #f8f9fa;
-      border-right: 1px solid #dadce0;
-      display: flex;
-      flex-direction: column;
-    }
-
-    #status {
-      padding: 12px;
-      background: #e8f0fe;
-      color: #1967d2;
-      font-size: 13px;
-      font-weight: 500;
-      border-bottom: 1px solid #dadce0;
-      height: 20px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    #file-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 10px 0;
-    }
-
-    .tree-node { user-select: none; }
-    .tree-label {
-      display: flex; align-items: center; padding: 6px 12px;
-      cursor: pointer; font-size: 14px; color: #3c4043; transition: background 0.1s;
-    }
-    .tree-label:hover { background-color: #f1f3f4; }
-    .tree-label.selected { background-color: #e8f0fe; color: #1967d2; font-weight: 500; }
-    .tree-arrow {
-      display: inline-block; width: 18px; font-size: 10px; color: #70757a;
-      transition: transform 0.1s; text-align: center; margin-right: 4px;
-    }
-    .tree-arrow.rotated { transform: rotate(90deg); }
-    .tree-children {
-      display: none; margin-left: 10px; padding-left: 10px; border-left: 1px solid #e8eaed;
-    }
-    .tree-icon { margin-right: 8px; font-size: 16px; }
-
-    #viewer { flex: 1; background: #fff; position: relative; }
-    webview { width: 100%; height: 100%; border: none; }
-  </style>
+    <meta charset="UTF-8">
+    <title>Google Drive Explorer</title>
+    <style>
+        body { margin: 0; padding: 0; height: 100vh; width: 100vw; display: flex; overflow: hidden; font-family: 'Roboto', 'Segoe UI', sans-serif; }
+        #sidebar { width: 250px; background-color: #f8f9fa; border-right: 1px solid #dadce0; display: flex; flex-direction: column; flex-shrink: 0; }
+        #viewer { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
+        #meta-pane { width: 260px; background-color: #fff; border-left: 1px solid #dadce0; display: flex; flex-direction: column; flex-shrink: 0; }
+        .tree-node { padding-left: 10px; }
+        .tree-children { display: none; padding-left: 10px; }
+        .tree-label { padding: 6px 8px; cursor: pointer; display: flex; align-items: center; border-radius: 0 16px 16px 0; margin-right: 8px; color: #3c4043; }
+        .tree-label:hover { background-color: #e8f0fe; }
+        .tree-label.selected { background-color: #e8f0fe; color: #1967d2; font-weight: 500; }
+        .tree-arrow { width: 20px; color: #70757a; font-size: 10px; display: inline-block; transition: transform 0.2s; }
+        .tree-arrow.rotated { transform: rotate(90deg); }
+        .tree-icon { margin-right: 8px; font-size: 16px; }
+        button:hover { opacity: 0.9; }
+    </style>
 </head>
 <body>
   <div id="sidebar">
-    <div id="status">Initializing...</div>
-    
-<div style="padding: 10px; border-bottom: 1px solid #dadce0;">
-        <input type="text" id="search-box" placeholder="🔍 Search Drive..." 
-               style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
-        
-        <div style="margin-top: 6px; display: flex; align-items: center;">
+    <div id="status" style="padding: 10px; font-size: 11px; color: #666; border-bottom: 1px solid #eee;">Initializing...</div>
+    <div id="toolbar" style="padding: 10px 10px 0 10px;">
+        <button id="daily-btn" style="width: 100%; padding: 8px; background-color: #e8f0fe; color: #1967d2; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; display: flex; align-items: center; justify-content: center;">
+            <span style="margin-right: 6px;">📅</span> Open Today's Diary
+        </button>
+    </div>
+    <div style="padding: 10px; border-bottom: 1px solid #dadce0;">
+        <input type="text" id="search-box" placeholder="🔍 Search Drive..." style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #dadce0; border-radius: 4px; background: #fff;">
+        <div style="margin-top: 8px; display: flex; align-items: center;">
             <input type="checkbox" id="search-content-check" style="margin: 0 6px 0 2px;">
             <label for="search-content-check" style="font-size: 12px; color: #5f6368; cursor: pointer;">Search inside files</label>
         </div>
     </div>
-
-    <div id="file-list"></div>
+    <div id="recent-section" style="display:none; border-bottom: 1px solid #dadce0;">
+        <div id="recent-header" style="font-size:11px; font-weight:700; color:#5f6368; padding:10px 12px; cursor:pointer; display:flex; align-items:center; user-select:none;">
+            <span id="recent-arrow" style="margin-right:6px; font-size:10px; transition: transform 0.2s;">▼</span> RECENT FILES
+        </div>
+        <div id="recent-list" style="display:block; padding-bottom:5px;"></div>
+    </div>
+    <div id="file-list" style="overflow-y: auto; flex: 1; padding-top: 5px;"></div>
   </div>
 
   <div id="viewer">
-    <webview 
-      id="doc-view" 
-      src="about:blank"
-      preload="webview-preload.js"
-      allowpopups
-      useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36">
-    </webview>
+    <webview id="doc-view" src="about:blank" allowpopups style="width: 100%; height: 100%;"></webview>
   </div>
 
-  <script src="renderer.js"></script>
+  <div id="meta-pane">
+    <div style="padding: 15px; border-bottom: 1px solid #eee; background: #f8f9fa;">
+        <h3 style="margin:0; font-size:14px; color:#333;">Document Metadata</h3>
+        <div id="meta-loading" style="font-size: 11px; color: #666; margin-top: 5px; display:none;">Scanning comments...</div>
+    </div>
+    <div style="padding: 15px; overflow-y: auto; flex: 1;">
+        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">Tags</label>
+        <div id="meta-tags" style="margin-top: 8px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 6px;"><span style="color:#999; font-size:12px; font-style:italic;">No #tags found</span></div>
+        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">Tasks</label>
+        <div id="meta-tasks" style="margin-top: 8px; margin-bottom: 20px;"><div style="color:#999; font-size:12px; font-style:italic;">No tasks found</div></div>
+        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">References</label>
+        <div id="meta-links" style="margin-top: 8px;"><div style="color:#999; font-size:12px; font-style:italic;">No links found</div></div>
+    </div>
+  </div>
 
   <div id="name-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
-    <div style="background: white; padding: 20px; border-radius: 8px; width: 300px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        <h3 id="modal-title" style="margin-top: 0; font-size: 16px;">Create New Item</h3>
-        <input type="text" id="filename-input" placeholder="Enter name..." style="width: 100%; padding: 8px; margin: 10px 0; box-sizing: border-box;">
-        <div style="text-align: right; margin-top: 10px;">
-            <button id="cancel-btn" style="padding: 6px 12px; margin-right: 8px; cursor: pointer;">Cancel</button>
-            <button id="create-btn" style="padding: 6px 12px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer;">Create</button>
-        </div>
-    </div>
-</div>
-
-<div id="details-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
+      <div style="background: white; padding: 20px; border-radius: 8px; width: 300px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+         <h3 id="modal-title" style="margin-top:0;">Create</h3>
+         <input type="text" id="filename-input" style="width:100%; margin:10px 0; box-sizing: border-box; padding: 8px;">
+         <div style="text-align:right;">
+             <button id="cancel-btn" style="padding: 6px 12px; margin-right: 5px;">Cancel</button>
+             <button id="create-btn" style="padding: 6px 12px; background: #1a73e8; color: white; border: none; border-radius: 4px;">Create</button>
+         </div>
+      </div>
+  </div>
+  
+  <div id="details-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
     <div style="background: white; padding: 25px; border-radius: 8px; width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
-        
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h3 id="details-title" style="margin: 0;">File Details</h3>
             <button id="close-details-btn" style="border: none; background: none; font-size: 20px; cursor: pointer;">&times;</button>
         </div>
-
-        <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;">
-            <tbody id="meta-table-body">
-                </tbody>
-        </table>
-
-        <h4 style="margin: 0 0 10px 0; border-bottom: 1px solid #eee; padding-bottom: 5px;">Version History (Last 10)</h4>
-        <div id="versions-list" style="font-size: 12px; color: #444;">
-            </div>
-
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;"><tbody id="meta-table-body"></tbody></table>
+        <h4 style="margin: 0 0 10px 0; border-bottom: 1px solid #eee; padding-bottom: 5px;">Version History</h4>
+        <div id="versions-list" style="font-size: 12px; color: #444;"></div>
     </div>
-</div>
+  </div>
 
-<div id="comments-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
+  <div id="comments-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
     <div style="background: white; padding: 0; border-radius: 8px; width: 400px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 4px 15px rgba(0,0,0,0.2); overflow: hidden;">
-        
         <div style="padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; background: #f8f9fa;">
             <h3 id="comments-title" style="margin: 0; font-size: 16px;">Comments</h3>
             <button id="close-comments-btn" style="border: none; background: none; font-size: 20px; cursor: pointer;">&times;</button>
         </div>
-
-        <div id="comments-list" style="padding: 15px; overflow-y: auto; flex: 1;">
-            </div>
+        <div id="comments-list" style="padding: 15px; overflow-y: auto; flex: 1;"></div>
     </div>
-</div>
+  </div>
 
-<script src="renderer.js"></script>
-</body>
-</html>
+  <script src="renderer.js"></script>
 </body>
 </html>

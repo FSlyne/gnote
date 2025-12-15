@@ -8,7 +8,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const webview = document.getElementById('doc-view');
     const searchBox = document.getElementById('search-box');
     const searchContentCheck = document.getElementById('search-content-check');
+    const dailyBtn = document.getElementById('daily-btn'); 
     
+    // COLLAPSIBLE ELEMENTS
+    const recentHeader = document.getElementById('recent-header');
+    const recentArrow = document.getElementById('recent-arrow');
+
     // MODAL ELEMENTS
     const modal = document.getElementById('name-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -16,26 +21,89 @@ document.addEventListener('DOMContentLoaded', () => {
     const createBtn = document.getElementById('create-btn');
     const cancelBtn = document.getElementById('cancel-btn');
 
-    // DETAILS MODAL ELEMENTS
+    // DETAILS & COMMENTS ELEMENTS
     const detailsModal = document.getElementById('details-modal');
     const detailsTitle = document.getElementById('details-title');
     const metaTable = document.getElementById('meta-table-body');
     const versionsList = document.getElementById('versions-list');
     const closeDetailsBtn = document.getElementById('close-details-btn');
-
-    // COMMENTS MODAL ELEMENTS
     const commentsModal = document.getElementById('comments-modal');
     const commentsTitle = document.getElementById('comments-title');
     const commentsList = document.getElementById('comments-list');
     const closeCommentsBtn = document.getElementById('close-comments-btn');
+    
+    // METADATA PANE ELEMENTS
+    const metaLoading = document.getElementById('meta-loading');
+    const metaTags = document.getElementById('meta-tags');
+    const metaTasks = document.getElementById('meta-tasks');
+    const metaLinks = document.getElementById('meta-links');
 
     // -- STATE --
     let searchTimeout = null;
     let pendingCreation = null; 
+    let isRecentExpanded = true;
+    let copiedFile = null; 
     const MAX_RECENT = 10;
 
     // =========================================================================
-    // 1. HELPER FUNCTIONS (Formatting, Links, Jumping)
+    // 0. SELF-HEALING WEBVIEW
+    // =========================================================================
+    if (webview) {
+        webview.addEventListener('render-process-gone', (e) => {
+            console.warn("Webview crashed:", e.reason);
+            status.innerText = "Viewer crashed. Reloading...";
+            webview.reload();
+        });
+        webview.addEventListener('did-fail-load', (e) => {
+            if (e.errorCode !== -3) { 
+                status.innerText = "Error loading doc. Retrying...";
+                setTimeout(() => webview.reload(), 1000);
+            }
+        });
+        webview.addEventListener('did-finish-load', () => {
+            if (status.innerText.includes('Loading') || status.innerText.includes('Opened Diary')) {
+                status.innerText = 'Ready';
+            }
+        });
+    }
+
+    // --- DAILY DIARY CLICK HANDLER ---
+    if (dailyBtn) {
+        dailyBtn.onclick = async () => {
+            dailyBtn.disabled = true;
+            dailyBtn.innerHTML = '⏳ Opening...';
+            status.innerText = "Locating Daily Diary...";
+            try {
+                const file = await window.api.openDailyDiary();
+                if (file) {
+                    status.innerText = `Opened Diary: ${file.name}`;
+                    // FORCE EDIT MODE HERE 👇
+                    openFile(file, 'edit'); 
+                }
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Failed to open diary.";
+                alert("Could not create/open daily diary.");
+            } finally {
+                dailyBtn.disabled = false;
+                dailyBtn.innerHTML = '<span style="margin-right: 6px;">📅</span> Open Today\'s Diary';
+            }
+        };
+    }
+
+    // =========================================================================
+    // 0.5 COLLAPSIBLE LOGIC
+    // =========================================================================
+    if (recentHeader && recentList && recentArrow) {
+        recentHeader.onclick = () => {
+            isRecentExpanded = !isRecentExpanded;
+            recentList.style.display = isRecentExpanded ? 'block' : 'none';
+            recentArrow.style.transform = isRecentExpanded ? 'rotate(0deg)' : 'rotate(-90deg)';
+        };
+    }
+
+    // =========================================================================
+    // 1. HELPER FUNCTIONS
     // =========================================================================
     
     function formatDate(isoString) {
@@ -53,591 +121,319 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getIcon(mimeType) {
         if (mimeType === 'application/vnd.google-apps.folder') return '📁';
+        if (mimeType.includes('shortcut')) return '🔗'; 
         if (mimeType.includes('spreadsheet')) return '📊';
         if (mimeType.includes('document')) return '📝';
         if (mimeType.includes('presentation')) return '📑';
         if (mimeType.includes('pdf')) return '📕';
-        if (mimeType.includes('image')) return '🖼️';
         return '📄';
     }
 
     function linkify(text) {
         if (!text) return '';
         const urlRegex = /(\b(https?):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
-        return text.replace(urlRegex, function(url) {
-            return `<a href="#" onclick="window.api.openExternal('${url}'); return false;" style="color:#1a73e8; text-decoration:underline;">${url}</a>`;
-        });
+        return text.replace(urlRegex, (url) => `<a href="#" onclick="window.api.openExternal('${url}'); return false;" style="color:#1a73e8; text-decoration:underline;">${url}</a>`);
     }
 
-    // EXPOSE JUMP FUNCTION TO WINDOW (So HTML onclick can see it)
     window.jumpToComment = (fileId, commentId) => {
-        const webview = document.getElementById('doc-view');
-        const commentsModal = document.getElementById('comments-modal');
-        
-        // Construct Deep Link with 'disco' (discussion) param
         const deepLink = `https://docs.google.com/document/d/${fileId}/edit?disco=${commentId}`;
-        
         status.innerText = "Locating comment...";
         webview.src = deepLink;
-        
-        commentsModal.style.display = 'none';
+        if (commentsModal) commentsModal.style.display = 'none';
     };
 
     function createCommentHTML(comment, fileId) {
         const date = new Date(comment.createdTime).toLocaleString();
         const author = comment.author ? comment.author.displayName : 'Unknown';
         const content = linkify(comment.content); 
-
-        // The "Locate" Button
-        const jumpButton = `
-            <button 
-                onclick="window.jumpToComment('${fileId}', '${comment.id}')"
-                style="float: right; border: 1px solid #dadce0; background: #fff; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: #1a73e8;">
-                🎯 Locate
-            </button>
-        `;
-
         return `
             <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f0;">
                 <div style="font-size: 12px; color: #5f6368; margin-bottom: 4px; display: flex; justify-content: space-between;">
                     <span><strong>${author}</strong> • ${date}</span>
-                    ${jumpButton}
+                    <button onclick="window.jumpToComment('${fileId}', '${comment.id}')" style="float: right; border: 1px solid #dadce0; background: #fff; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: #1a73e8;">🎯 Locate</button>
                 </div>
                 <div style="font-size: 14px; color: #202124; white-space: pre-wrap; margin-top: 5px;">${content}</div>
-                ${comment.replies && comment.replies.length > 0 ? 
-                    `<div style="margin-left: 15px; margin-top: 8px; border-left: 2px solid #ddd; padding-left: 10px;">
-                        ${comment.replies.map(reply => createCommentHTML(reply, fileId)).join('')}
-                    </div>` 
-                : ''}
+                ${comment.replies && comment.replies.length > 0 ? `<div style="margin-left: 15px; margin-top: 8px; border-left: 2px solid #ddd; padding-left: 10px;">${comment.replies.map(reply => createCommentHTML(reply, fileId)).join('')}</div>` : ''}
             </div>
         `;
     }
 
     // =========================================================================
-    // 2. RECENT FILES SYSTEM
+    // 2. OPEN FILE LOGIC (UPDATED FOR MODES)
     // =========================================================================
-    function loadRecents() {
-        const data = localStorage.getItem('recentFiles');
-        return data ? JSON.parse(data) : [];
-    }
+    function openFile(file, mode = 'preview') {
+        if (!file.webViewLink) return;
+        status.innerText = `Loading: ${file.name}...`;
+        let link = file.webViewLink;
+        
+        if (mode === 'edit') {
+            // FORCE EDIT MODE
+            link = link.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
+        } else {
+            // FORCE PREVIEW MODE (Default)
+            link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
+        }
 
-    function saveRecents(files) {
-        localStorage.setItem('recentFiles', JSON.stringify(files));
-        renderRecents();
+        webview.src = link;
+        addToRecents(file); 
+        scanCommentsForMetadata(file.id);
     }
 
     function addToRecents(file) {
-        let recents = loadRecents();
-        recents = recents.filter(f => f.id !== file.id);
-        recents.unshift({
-            id: file.id,
-            name: file.name,
-            mimeType: file.mimeType,
-            webViewLink: file.webViewLink
-        });
+        let recents = loadRecents().filter(f => f.id !== file.id);
+        recents.unshift({ id: file.id, name: file.name, mimeType: file.mimeType, webViewLink: file.webViewLink });
         if (recents.length > MAX_RECENT) recents = recents.slice(0, MAX_RECENT);
         saveRecents(recents);
     }
+    function loadRecents() { const data = localStorage.getItem('recentFiles'); return data ? JSON.parse(data) : []; }
+    function saveRecents(files) { localStorage.setItem('recentFiles', JSON.stringify(files)); renderRecents(); }
 
     function renderRecents() {
         if (!recentList) return; 
         const recents = loadRecents();
         recentList.innerHTML = '';
-        
         if (recents.length > 0) {
             if (recentSection) recentSection.style.display = 'block';
             recents.forEach(file => {
                 const row = document.createElement('div');
-                row.className = 'tree-label';
-                row.style.fontSize = '13px'; 
-                
-                const icon = document.createElement('span');
-                icon.className = 'tree-icon';
-                icon.innerText = getIcon(file.mimeType);
-                
-                const text = document.createElement('span');
-                text.innerText = file.name;
-                text.style.whiteSpace = 'nowrap';
-                text.style.overflow = 'hidden';
-                text.style.textOverflow = 'ellipsis';
-
-                row.appendChild(icon);
-                row.appendChild(text);
-
+                row.className = 'tree-label'; row.style.fontSize = '13px'; 
+                row.innerHTML = `<span class="tree-icon">${getIcon(file.mimeType)}</span><span>${file.name}</span>`;
                 row.onclick = () => openFile(file);
                 recentList.appendChild(row);
             });
-        } else {
-            if (recentSection) recentSection.style.display = 'none';
-        }
+            if (!isRecentExpanded) { recentList.style.display = 'none'; recentArrow.style.transform = 'rotate(-90deg)'; }
+        } else { if (recentSection) recentSection.style.display = 'none'; }
+    }
+
+    async function scanCommentsForMetadata(fileId) {
+        if(!metaLoading) return;
+        metaLoading.style.display = 'block';
+        metaTags.innerHTML = '<span style="color:#ccc; font-size:12px;">Scanning...</span>';
+        metaTasks.innerHTML = ''; metaLinks.innerHTML = '';
+        try {
+            const comments = await window.api.getFileComments(fileId);
+            const tags = [], tasks = [], links = [];
+            const scanList = (list) => {
+                list.forEach(c => {
+                    const lines = c.content.split('\n');
+                    lines.forEach(line => {
+                        const text = line.trim();
+                        if (!text) return;
+                        const tagMatches = text.match(/(^|\s)(#[a-zA-Z0-9-_]+)(?=$|[\s.,!?])/g);
+                        if (tagMatches) tagMatches.forEach(t => tags.push({ text: t.trim(), commentId: c.id }));
+                        const taskRegex = /^(todo:|\[\s*\]|-\s*\[\s*\])/i;
+                        if (taskRegex.test(text)) {
+                            tasks.push({ text: text.replace(taskRegex, '').trim(), commentId: c.id, author: c.author.displayName });
+                        }
+                        if (text.includes('http')) {
+                            const urlMatches = text.match(/(https?:\/\/[^\s]+)/g);
+                            if (urlMatches) urlMatches.forEach(u => links.push({ url: u, commentId: c.id }));
+                        }
+                    });
+                    if (c.replies) scanList(c.replies);
+                });
+            };
+            scanList(comments);
+
+            // Render
+            if (tags.length > 0) {
+                const uniqueTags = [...new Set(tags.map(t => t.text))];
+                metaTags.innerHTML = '';
+                uniqueTags.forEach(tagText => {
+                    const tagEl = document.createElement('span');
+                    tagEl.innerText = tagText;
+                    tagEl.style.cssText = "background:#e8f0fe; color:#1967d2; padding:2px 8px; border-radius:12px; font-size:11px; cursor:pointer; border:1px solid #d2e3fc;";
+                    tagEl.onclick = () => { if (searchBox) { searchBox.value = tagText; if (searchContentCheck) searchContentCheck.checked = true; searchBox.dispatchEvent(new Event('input')); } };
+                    metaTags.appendChild(tagEl);
+                });
+            } else { metaTags.innerHTML = '<span style="color:#999; font-size:12px; font-style:italic;">No #tags found</span>'; }
+
+            if (tasks.length > 0) {
+                metaTasks.innerHTML = '';
+                tasks.forEach(t => {
+                    const row = document.createElement('div');
+                    row.style.cssText = "display:flex; margin-bottom:8px; font-size:12px; color:#333; cursor:pointer; align-items:flex-start; padding: 2px 0;";
+                    row.innerHTML = `<span style="margin-right:6px; color:#5f6368; font-size:14px;">☐</span><span style="line-height:1.4;">${t.text}</span>`;
+                    row.onclick = () => window.jumpToComment(fileId, t.commentId);
+                    row.onmouseover = () => { row.style.color = '#1a73e8'; row.style.background = '#f1f3f4'; };
+                    row.onmouseout = () => { row.style.color = '#333'; row.style.background = 'transparent'; };
+                    metaTasks.appendChild(row);
+                });
+            } else { metaTasks.innerHTML = '<div style="color:#999; font-size:12px; font-style:italic;">No tasks found</div>'; }
+
+            if (links.length > 0) {
+                metaLinks.innerHTML = '';
+                links.forEach(l => {
+                    const row = document.createElement('div');
+                    row.style.cssText = "margin-bottom:6px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;";
+                    row.innerHTML = `<a href="#" onclick="window.api.openExternal('${l.url}'); return false;" style="color:#1a73e8; text-decoration:none;">🔗 ${l.url}</a>`;
+                    metaLinks.appendChild(row);
+                });
+            } else { metaLinks.innerHTML = '<div style="color:#999; font-size:12px; font-style:italic;">No links found</div>'; }
+        } catch (e) { console.error("Meta scan failed", e); } finally { metaLoading.style.display = 'none'; }
     }
 
     // =========================================================================
-    // 3. FILE OPENING & PREVIEW
+    // 3. MENU ACTIONS
     // =========================================================================
-    function openFile(file) {
-        if (!file.webViewLink) return;
-
-        status.innerText = `Loading: ${file.name}...`;
-        let link = file.webViewLink;
-        
-        // Convert Edit/View links to Preview mode (unless jumping to comment)
-        if (link.includes('/view') || link.includes('/edit')) {
-             link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
-        }
-        
-        webview.src = link;
-        addToRecents(file); 
-
-        webview.addEventListener('did-finish-load', () => {
-            status.innerText = `Viewing: ${file.name}`;
-        }, { once: true });
-    }
-
-    // =========================================================================
-    // 4. MENU ACTIONS
-    // =========================================================================
-    
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
-
-            // --- NEW ACTION: EDIT IN APP ---
-            if (action === 'edit') {
-                status.innerText = `Opening editor for: ${data.name}...`;
-                
-                let editLink = data.link;
-                
-                // Force the URL to be an 'edit' URL
-                if (editLink.includes('/view') || editLink.includes('/preview')) {
-                    editLink = editLink.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
-                }
-                
-                // Load it into the main view
-                webview.src = editLink;
-            }
-            
-            // --- ACTION: CREATE NEW ---
             if (action === 'create') {
-                pendingCreation = data; // <--- CRITICAL: Store data for later
-                
-                let typeName = "File";
-                if (data.type === 'folder') typeName = "Folder";
-                if (data.type === 'doc') typeName = "Google Doc";
-                if (data.type === 'sheet') typeName = "Google Sheet";
-                
-                if (modalTitle) modalTitle.innerText = `Name your new ${typeName}:`;
+                pendingCreation = data; 
+                if (modalTitle) modalTitle.innerText = `Name your new ${data.type === 'folder' ? 'Folder' : 'File'}:`;
                 if (nameInput) nameInput.value = "";
-                if (modal) {
-                    modal.style.display = 'flex';
-                    nameInput.focus();
-                }
+                if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
-
-            // --- ACTION: VIEW DETAILS ---
             if (action === 'details') {
                 if (!detailsModal) return;
-                
                 detailsTitle.innerText = `Loading: ${data.name}...`;
                 detailsModal.style.display = 'flex';
-                metaTable.innerHTML = '';
-                versionsList.innerHTML = 'Fetching versions...';
-
+                metaTable.innerHTML = ''; versionsList.innerHTML = 'Fetching versions...';
                 try {
                     const info = await window.api.getFileDetails(data.id);
-                    const meta = info.metadata;
-                    
-                    detailsTitle.innerText = meta.name;
-
-                    const rows = [
-                        ['Type', meta.mimeType],
-                        // CHANGED: Use fullPath, and allow it to wrap/scroll if long
-                        ['Location', `<span style="font-size:11px; color:#1a73e8;">${meta.fullPath || 'Root'}</span>`], 
-                        ['Size', formatSize(meta.size)],
-                        ['Created', formatDate(meta.createdTime)],
-                        ['Modified', formatDate(meta.modifiedTime)],
-                        ['Owner', meta.owners ? meta.owners.map(o => o.displayName).join(', ') : 'Me']
-                    ];
-
-                    metaTable.innerHTML = rows.map(r => `
-                        <tr style="border-bottom: 1px solid #f0f0f0;">
-                            <td style="padding: 8px 0; font-weight: bold; width: 100px; color:#5f6368;">${r[0]}</td>
-                            <td style="padding: 8px 0;">${r[1]}</td>
-                        </tr>
-                    `).join('');
-
-                    if (info.revisions && info.revisions.length > 0) {
-                        versionsList.innerHTML = info.revisions.map(rev => `
-                            <div style="padding: 8px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between;">
-                                <span>
-                                    <strong>${formatDate(rev.modifiedTime)}</strong> 
-                                    <span style="color:#666;"> - ${rev.lastModifyingUser?.displayName || 'Unknown'}</span>
-                                </span>
-                                <span style="font-family: monospace; background: #eee; padding: 2px 4px; border-radius: 3px;">
-                                    ID: ${rev.id.substring(0,6)}...
-                                </span>
-                            </div>
-                        `).join('');
-                    } else {
-                        versionsList.innerHTML = '<div style="padding:10px; color:#999;">No version history available.</div>';
-                    }
-
-                } catch (err) {
-                    console.error(err);
-                    versionsList.innerText = "Error loading details.";
-                }
+                    detailsTitle.innerText = info.metadata.name;
+                    metaTable.innerHTML = `<tr><td style="font-weight:bold;">Type</td><td>${info.metadata.mimeType}</td></tr><tr><td style="font-weight:bold;">Location</td><td>${info.metadata.fullPath}</td></tr><tr><td style="font-weight:bold;">Size</td><td>${formatSize(info.metadata.size)}</td></tr>`;
+                    if (info.revisions.length > 0) versionsList.innerHTML = info.revisions.map(rev => `<div>${formatDate(rev.modifiedTime)} - ${rev.lastModifyingUser?.displayName}</div>`).join('');
+                    else versionsList.innerHTML = 'No versions.';
+                } catch (err) { versionsList.innerText = "Error."; }
             }
-
-            // --- ACTION: VIEW COMMENTS ---
             if (action === 'comments') {
                 if (!commentsModal) return;
-                
                 commentsTitle.innerText = `Comments: ${data.name}`;
-                commentsList.innerHTML = '<div style="color:#666;">Loading comments...</div>';
+                commentsList.innerHTML = 'Loading...';
                 commentsModal.style.display = 'flex';
-
                 try {
                     const comments = await window.api.getFileComments(data.id);
-                    
-                    if (comments.length === 0) {
-                        commentsList.innerHTML = '<div style="padding:10px; color:#999; text-align:center;">No comments found.</div>';
-                    } else {
-                        commentsList.innerHTML = comments.map(c => createCommentHTML(c, data.id)).join('');
-                    }
-                } catch (err) {
-                    console.error(err);
-                    commentsList.innerText = "Error loading comments.";
+                    commentsList.innerHTML = comments.length ? comments.map(c => createCommentHTML(c, data.id)).join('') : 'No comments.';
+                } catch (err) { commentsList.innerText = "Error."; }
+            }
+            if (action === 'edit') {
+                status.innerText = `Opening editor...`;
+                let editLink = data.link;
+                if (data.shortcutDetails?.targetId) {
+                    try {
+                        const target = await window.api.getFileDetails(data.shortcutDetails.targetId);
+                        if (target?.metadata?.webViewLink) editLink = target.metadata.webViewLink;
+                    } catch (e) { console.error("Shortcut resolve failed"); }
                 }
+                if (editLink.includes('/view') || editLink.includes('/preview')) editLink = editLink.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
+                webview.src = editLink;
+            }
+            if (action === 'copy-ref') { copiedFile = data; status.innerText = `Copied "${data.name}".`; }
+            if (action === 'paste-shortcut' && copiedFile) {
+                status.innerText = `Creating shortcut...`;
+                await window.api.createShortcut({ targetId: copiedFile.id, parentId: data.parentId, name: copiedFile.name });
+                status.innerText = `Shortcut created. Refreshing...`;
+                init(); // Lazy refresh
             }
         });
     }
 
-    // --- MODAL CLOSING ---
-    function closeModal() {
-        if (modal) modal.style.display = 'none';
-        pendingCreation = null;
-    }
-
+    function closeModal() { if (modal) modal.style.display = 'none'; pendingCreation = null; }
     if (cancelBtn) cancelBtn.onclick = closeModal;
     if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
     if (closeCommentsBtn) closeCommentsBtn.onclick = () => { commentsModal.style.display = 'none'; };
 
-    // --- FILE CREATION LOGIC (FIXED) ---
     if (createBtn) {
         createBtn.onclick = async () => {
             const name = nameInput.value.trim();
-            // SAFETY CHECK: Ensure we have data before proceeding
             if (!name || !pendingCreation) return; 
-            
-            const parentId = pendingCreation.parentId;
-            const type = pendingCreation.type;
-
-            let mimeType = 'application/vnd.google-apps.folder';
-            if (type === 'doc') mimeType = 'application/vnd.google-apps.document';
-            if (type === 'sheet') mimeType = 'application/vnd.google-apps.spreadsheet';
-
-            status.innerText = `Creating "${name}"...`;
             closeModal();
-
-            try {
-                await window.api.createFile({
-                    parentId: parentId,
-                    name: name,
-                    mimeType: mimeType
-                });
-                
-                status.innerText = `Created ${name}. Refreshing folder...`;
-
-                const parentNode = document.querySelector(`.tree-node[data-id="${parentId}"]`);
-                if (parentNode) {
-                    const childrenContainer = parentNode.querySelector('.tree-children');
-                    const arrow = parentNode.querySelector('.tree-arrow');
-                    if (childrenContainer) {
-                        childrenContainer.style.display = 'block'; 
-                        if (arrow) { arrow.innerText = '▼'; arrow.classList.add('rotated'); }
-                        childrenContainer.innerHTML = ''; 
-                        const children = await window.api.listFiles(parentId);
-                        if (children.length === 0) childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
-                        else children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
-                        status.innerText = 'Ready';
-                    }
-                } else {
-                    alert(`Created "${name}".`);
-                    init(); 
-                }
-            } catch (err) {
-                console.error(err);
-                status.innerText = "Error creating file.";
-                alert("Failed to create file.");
-            }
+            let mimeType = 'application/vnd.google-apps.folder';
+            if (pendingCreation.type === 'doc') mimeType = 'application/vnd.google-apps.document';
+            if (pendingCreation.type === 'sheet') mimeType = 'application/vnd.google-apps.spreadsheet';
+            await window.api.createFile({ parentId: pendingCreation.parentId, name: name, mimeType: mimeType });
+            init(); // Lazy refresh
         };
     }
-
-    if (nameInput) {
-        nameInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') createBtn.click();
-        });
-    }
+    if (nameInput) nameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') createBtn.click(); });
 
     // =========================================================================
-    // 5. LISTENERS & SEARCH
+    // 4. SEARCH & TREE VIEW
     // =========================================================================
-
-    if (window.api.onAuthSuccess) {
-        window.api.onAuthSuccess(() => {
-            console.log("Auth success signal received!");
-            status.innerText = "Login confirmed. Loading files...";
-            init(); 
-        });
-    }
-
-    webview.addEventListener('ipc-message', (event) => {
-        if (event.channel === 'header-context-menu') {
-            window.api.showHeaderMenu(event.args[0]);
-        }
-    });
+    if (window.api.onAuthSuccess) { window.api.onAuthSuccess(() => init()); }
+    webview.addEventListener('ipc-message', (event) => { if (event.channel === 'header-context-menu') window.api.showHeaderMenu(event.args[0]); });
 
     if (searchBox) {
         const performSearch = () => {
-            const query = searchBox.value.trim();
-            const searchContent = searchContentCheck ? searchContentCheck.checked : false;
-
             if (searchTimeout) clearTimeout(searchTimeout);
-
-            if (query.length === 0) { init(); return; }
-
+            if (searchBox.value.trim().length === 0) { init(); return; }
             searchTimeout = setTimeout(async () => {
-                const modeText = searchContent ? "names & content" : "names only";
-                status.innerText = `Searching ${modeText} for "${query}"...`;
-                fileList.innerHTML = ''; 
-                try {
-                    const results = await window.api.searchFiles(query, searchContent);
-                    if (results.length === 0) {
-                        fileList.innerHTML = '<div style="padding:15px; color:#666;">No results found.</div>';
-                        status.innerText = 'No results.';
-                    } else {
-                        status.innerText = `Found ${results.length} results.`;
-                        results.forEach(file => fileList.appendChild(createTreeItem(file)));
-                    }
-                } catch (err) {
-                    console.error(err);
-                    status.innerText = "Search failed.";
-                }
+                const query = searchBox.value.trim();
+                const isTag = query.startsWith('#');
+                status.innerText = `Searching...`;
+                const res = await window.api.searchFiles(isTag ? query.substring(1) : query, isTag || searchContentCheck.checked);
+                fileList.innerHTML = '';
+                res.forEach(f => fileList.appendChild(createTreeItem(f)));
+                status.innerText = `Found ${res.length} results.`;
             }, 500);
         };
-
         searchBox.addEventListener('input', performSearch);
-        if (searchContentCheck) {
-            searchContentCheck.addEventListener('change', () => {
-                if (searchBox.value.trim().length > 0) performSearch();
-            });
-        }
     }
 
-    // =========================================================================
-    // 6. TREE VIEW & DRAG/DROP
-    // =========================================================================
-    
     function createTreeItem(file) {
-      const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-      const nodeContainer = document.createElement('div');
-      nodeContainer.className = 'tree-node';
-      nodeContainer.dataset.id = file.id; 
+      const isRealFolder = file.mimeType === 'application/vnd.google-apps.folder';
+      const isShortcut = file.mimeType === 'application/vnd.google-apps.shortcut';
+      let isFolder = isRealFolder;
+      if (isShortcut && file.shortcutDetails?.targetMimeType === 'application/vnd.google-apps.folder') isFolder = true;
       
-      const currentParentId = (file.parents && file.parents.length > 0) ? file.parents[0] : 'root';
-      nodeContainer.dataset.parentId = currentParentId;
-  
-      const labelRow = document.createElement('div');
-      labelRow.className = 'tree-label';
-      labelRow.draggable = true; 
+      const node = document.createElement('div'); node.className = 'tree-node';
+      const label = document.createElement('div'); label.className = 'tree-label'; label.draggable = true;
+      const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.innerText = isFolder ? '▶' : '';
+      label.innerHTML = `<span class="tree-icon">${getIcon(file.mimeType)}</span><span>${file.name}</span>`;
+      label.prepend(arrow);
       
-      const arrow = document.createElement('span');
-      arrow.className = 'tree-arrow';
-      arrow.innerText = isFolder ? '▶' : ''; 
-      
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon';
-      icon.innerText = getIcon(file.mimeType);
-  
-      const text = document.createElement('span');
-      text.innerText = file.name;
-  
-      labelRow.appendChild(arrow);
-      labelRow.appendChild(icon);
-      labelRow.appendChild(text);
-  
-      const childrenContainer = document.createElement('div');
-      childrenContainer.className = 'tree-children';
-  
-      labelRow.onclick = async (e) => {
+      const children = document.createElement('div'); children.className = 'tree-children';
+      node.appendChild(label); node.appendChild(children);
+
+      label.onclick = async (e) => {
         e.stopPropagation();
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
-        labelRow.classList.add('selected');
-  
+        label.classList.add('selected');
+        
+        // --- NORMAL OPENING (Defaults to Preview) ---
         if (!isFolder) { openFile(file); return; }
-  
-        if (isFolder) {
-            const isExpanded = childrenContainer.style.display === 'block';
-            if (isExpanded) {
-                childrenContainer.style.display = 'none';
-                arrow.innerText = '▶';
-                arrow.classList.remove('rotated');
-            } else {
-                childrenContainer.style.display = 'block';
-                arrow.innerText = '▼';
-                arrow.classList.add('rotated');
-                if (childrenContainer.children.length === 0) {
-                    const originalIcon = icon.innerText;
-                    icon.innerText = '⏳';
-                    try {
-                        status.innerText = `Fetching contents of ${file.name}...`;
-                        const children = await window.api.listFiles(file.id);
-                        if (children.length === 0) childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
-                        else children.forEach(child => childrenContainer.appendChild(createTreeItem(child)));
-                        status.innerText = 'Ready';
-                    } catch (err) {
-                        console.error(err);
-                        status.innerText = "Error loading folder";
-                    } finally {
-                        icon.innerText = originalIcon;
-                    }
-                }
+        
+        if (children.style.display === 'block') {
+            children.style.display = 'none'; arrow.innerText = '▶'; arrow.classList.remove('rotated');
+        } else {
+            children.style.display = 'block'; arrow.innerText = '▼'; arrow.classList.add('rotated');
+            if (children.children.length === 0) {
+                const res = await window.api.listFiles(file.id);
+                if (res.length === 0) children.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
+                else res.forEach(child => children.appendChild(createTreeItem(child)));
             }
         }
       };
 
-      labelRow.addEventListener('contextmenu', (e) => {
-        e.preventDefault(); 
-        document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
-        labelRow.classList.add('selected');
-        
-        window.api.showContextMenu({
-            name: file.name,
-            link: file.webViewLink,
-            isFolder: isFolder,
-            id: file.id,
-            parentId: currentParentId
+      label.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        window.api.showContextMenu({ 
+            name: file.name, link: file.webViewLink, isFolder: isFolder, id: file.id, parentId: (file.parents ? file.parents[0] : 'root'), hasCopiedFile: !!copiedFile, shortcutDetails: file.shortcutDetails
         });
       });
 
-      labelRow.addEventListener('dragstart', (e) => {
-          e.stopPropagation();
-          const data = JSON.stringify({ id: file.id, oldParent: currentParentId, name: file.name });
-          e.dataTransfer.setData('application/json', data);
-          e.dataTransfer.effectAllowed = 'move';
-          labelRow.style.opacity = '0.5';
-      });
-
-      labelRow.addEventListener('dragend', () => { labelRow.style.opacity = '1'; });
-
-      if (isFolder) {
-          labelRow.addEventListener('dragover', (e) => {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              labelRow.style.backgroundColor = '#d2e3fc';
-          });
-          labelRow.addEventListener('dragleave', () => {
-              labelRow.style.backgroundColor = '';
-              if (labelRow.classList.contains('selected')) labelRow.style.backgroundColor = '#e8f0fe';
-          });
-          labelRow.addEventListener('drop', async (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              labelRow.style.backgroundColor = '';
-
-              const rawData = e.dataTransfer.getData('application/json');
-              if (!rawData) return;
-              
-              const draggedItem = JSON.parse(rawData);
-              if (draggedItem.id === file.id) return;
-              if (draggedItem.oldParent === file.id) return;
-
-              const confirmMove = confirm(`Move "${draggedItem.name}" into "${file.name}"?`);
-              if (!confirmMove) return;
-
-              status.innerText = `Moving "${draggedItem.name}"...`;
-
-              try {
-                  await window.api.moveFile({
-                      fileId: draggedItem.id,
-                      oldParentId: draggedItem.oldParent,
-                      newParentId: file.id
-                  });
-
-                  status.innerText = `Moved! Refreshing...`;
-                  const oldNode = document.querySelector(`.tree-node[data-id="${draggedItem.id}"]`);
-                  if (oldNode) oldNode.remove();
-                  
-                  childrenContainer.innerHTML = ''; 
-                  childrenContainer.style.display = 'none'; 
-                  labelRow.click(); 
-
-              } catch (err) {
-                  console.error(err);
-                  status.innerText = "Error moving file.";
-                  alert("Failed to move file.");
-              }
-          });
-      }
-  
-      nodeContainer.appendChild(labelRow);
-      nodeContainer.appendChild(childrenContainer);
-      return nodeContainer;
+      return node;
     }
   
-    // =========================================================================
-    // 7. INITIALIZATION
-    // =========================================================================
     async function init() {
-      const oldBtn = document.getElementById('login-btn');
-      if (oldBtn) oldBtn.remove();
-      
+      const oldBtn = document.getElementById('login-btn'); if (oldBtn) oldBtn.remove();
       renderRecents();
-
       try {
         status.innerText = 'Checking connection...';
         const rootFiles = await window.api.listFiles('root');
-        
+        fileList.innerHTML = '';
         if (rootFiles.length > 0) {
-            status.innerText = `Loaded ${rootFiles.length} items.`;
-            fileList.innerHTML = '';
+            status.innerText = 'Ready';
             rootFiles.forEach(file => fileList.appendChild(createTreeItem(file)));
         } else {
-            status.innerText = 'Not signed in (or drive is empty).';
-            fileList.innerHTML = '';
-            
-            const btn = document.createElement('button');
-            btn.id = 'login-btn';
-            btn.innerText = "🔑 Sign In with Google";
-            btn.style.width = "100%";
-            btn.style.padding = "10px";
-            btn.style.marginTop = "10px";
-            btn.style.backgroundColor = "#4285F4";
-            btn.style.color = "white";
-            btn.style.border = "none";
-            btn.style.borderRadius = "4px";
-            btn.style.cursor = "pointer";
-            btn.style.fontSize = "14px";
-            
-            btn.onclick = async () => {
-                status.innerText = "Opening browser...";
-                btn.disabled = true;
-                btn.innerText = "Waiting for browser...";
-                await window.api.openWebLogin();
-            };
+            const btn = document.createElement('button'); btn.id = 'login-btn'; btn.innerText = "🔑 Sign In";
+            btn.onclick = () => window.api.openWebLogin();
             fileList.appendChild(btn);
         }
       } catch (e) {
-        console.error(e);
-        status.innerText = 'Error initializing app.';
-        
-        fileList.innerHTML = `<div style="padding:10px; color:red; font-size:12px;">Connection failed. Please try signing in again.</div>`;
-        const btn = document.createElement('button');
-        btn.innerText = "Retry Sign In";
-        btn.style.marginTop = "10px";
-        btn.onclick = () => window.api.openWebLogin();
-        fileList.appendChild(btn);
+        status.innerText = 'Connection failed.';
       }
     }
-  
     init();
 });

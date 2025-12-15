@@ -14,7 +14,9 @@ const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/drive.metadata'
+  'https://www.googleapis.com/auth/drive.metadata',
+  'https://www.googleapis.com/auth/documents.readonly', // <--- NEW
+  'https://www.googleapis.com/auth/spreadsheets' // <--- MUST BE HERE
 ];
 
 // ---------------------------------------------------------
@@ -61,6 +63,29 @@ async function startAuthentication() {
 // ---------------------------------------------------------
 // 2. API HANDLERS
 // ---------------------------------------------------------
+
+// main.js - Add this new handler
+
+// J. Scan Document Content
+ipcMain.handle('doc:scanContent', async (event, fileId) => {
+  if (!authClient) return null;
+  
+  // Use the Docs API (v1)
+  const docs = google.docs({ version: 'v1', auth: authClient });
+
+  try {
+    const res = await docs.documents.get({ documentId: fileId });
+    // We only send back the body content and title to keep it light
+    return {
+        title: res.data.title,
+        content: res.data.body.content
+    };
+  } catch (err) {
+    console.error("Doc Scan Error:", err);
+    return null; // Likely not a Google Doc (maybe a Folder or PDF)
+  }
+});
+
 ipcMain.handle('auth:openWebLogin', async () => {
   try { await startAuthentication(); return true; } catch (e) { return false; }
 });
@@ -79,6 +104,67 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
     });
     return res.data.files ?? [];
   } catch (err) { return []; }
+});
+
+// main.js - Add this alongside your other ipcMain handlers
+
+// main.js - Updated Sync Handler (New Columns)
+
+ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
+  if (!authClient) return false;
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  console.log(`Syncing ${items.length} items for File ID: ${fileId}`);
+
+  try {
+    // 1. Find (or Create) "Master Index" Sheet
+    let spreadsheetId;
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+
+    if (search.data.files.length > 0) {
+      spreadsheetId = search.data.files[0].id;
+    } else {
+      console.log("Creating Master Index...");
+      const newSheet = await sheets.spreadsheets.create({
+        resource: { properties: { title: 'Master Index' } }
+      });
+      spreadsheetId = newSheet.data.spreadsheetId;
+      
+      // NEW HEADER ROW
+      await sheets.spreadsheets.values.append({
+        spreadsheetId, range: 'Sheet1!A1', valueInputOption: 'USER_ENTERED',
+        resource: { values: [['Date Synced', 'File ID', 'Header ID', 'Type', 'Content']] }
+      });
+    }
+
+    // 2. Format Data for Append
+    const timestamp = new Date().toLocaleString();
+    const rows = items.map(item => [
+      timestamp,
+      fileId,          // Just the File Hash (ID)
+      item.headerId,   // Just the Header Hash (ID)
+      item.type,
+      item.text
+    ]);
+
+    // 3. Append Rows
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: 'Sheet1!A1',
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: rows }
+    });
+
+    console.log("Sync Complete.");
+    return true;
+  } catch (err) {
+    console.error("Sync Error Details:", err);
+    throw err;
+  }
 });
 
 ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
@@ -149,17 +235,6 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   return { metadata: meta, revisions: revisions.reverse() };
 });
 
-ipcMain.handle('drive:getFileComments', async (event, fileId) => {
-  if (!authClient) return [];
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  try {
-    const res = await drive.comments.list({
-      fileId: fileId, fields: 'comments(id, content, author(displayName), createdTime, replies(id, content, author(displayName), createdTime))', pageSize: 100
-    });
-    return res.data.comments || [];
-  } catch (err) { return []; }
-});
-
 ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -170,7 +245,7 @@ ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name 
   return res.data;
 });
 
-// --- NEW: DAILY DIARY HANDLER ---
+// DAILY DIARY HANDLER
 ipcMain.handle('drive:openDailyDiary', async () => {
     if (!authClient) return null;
     const drive = google.drive({ version: 'v3', auth: authClient });
@@ -245,7 +320,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, ha
   }
   template.push({ type: 'separator' });
   template.push({ label: 'ℹ️ View Details & Versions', click: () => sendAction(event, 'details', { id, name }) });
-  template.push({ label: '💬 View Comments', click: () => sendAction(event, 'comments', { id, name }) });
+  // Removed "View Comments"
 
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });

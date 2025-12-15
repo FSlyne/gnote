@@ -5,9 +5,17 @@
     <title>Google Drive Explorer</title>
     <style>
         body { margin: 0; padding: 0; height: 100vh; width: 100vw; display: flex; overflow: hidden; font-family: 'Roboto', 'Segoe UI', sans-serif; }
+        
+        /* Left Sidebar */
         #sidebar { width: 250px; background-color: #f8f9fa; border-right: 1px solid #dadce0; display: flex; flex-direction: column; flex-shrink: 0; }
+        
+        /* Main Viewer */
         #viewer { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
-        #meta-pane { width: 260px; background-color: #fff; border-left: 1px solid #dadce0; display: flex; flex-direction: column; flex-shrink: 0; }
+
+        /* Right Scanner Pane */
+        #scanner-pane { width: 280px; background: #fff; border-left: 1px solid #dadce0; display: flex; flex-direction: column; flex-shrink: 0; }
+        
+        /* Tree Utilities */
         .tree-node { padding-left: 10px; }
         .tree-children { display: none; padding-left: 10px; }
         .tree-label { padding: 6px 8px; cursor: pointer; display: flex; align-items: center; border-radius: 0 16px 16px 0; margin-right: 8px; color: #3c4043; }
@@ -47,19 +55,20 @@
     <webview id="doc-view" src="about:blank" allowpopups style="width: 100%; height: 100%;"></webview>
   </div>
 
-  <div id="meta-pane">
-    <div style="padding: 15px; border-bottom: 1px solid #eee; background: #f8f9fa;">
-        <h3 style="margin:0; font-size:14px; color:#333;">Document Metadata</h3>
-        <div id="meta-loading" style="font-size: 11px; color: #666; margin-top: 5px; display:none;">Scanning comments...</div>
-    </div>
-    <div style="padding: 15px; overflow-y: auto; flex: 1;">
-        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">Tags</label>
-        <div id="meta-tags" style="margin-top: 8px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 6px;"><span style="color:#999; font-size:12px; font-style:italic;">No #tags found</span></div>
-        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">Tasks</label>
-        <div id="meta-tasks" style="margin-top: 8px; margin-bottom: 20px;"><div style="color:#999; font-size:12px; font-style:italic;">No tasks found</div></div>
-        <label style="font-size: 11px; font-weight: bold; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;">References</label>
-        <div id="meta-links" style="margin-top: 8px;"><div style="color:#999; font-size:12px; font-style:italic;">No links found</div></div>
-    </div>
+  <div id="scanner-pane">
+      <div style="padding: 15px; border-bottom: 1px solid #eee; background: #f8f9fa; display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0; font-size:14px; color:#333;">Document Scanner</h3>
+          <div style="display:flex; gap: 5px;">
+            <button id="sync-btn" style="border:none; background:transparent; cursor:pointer; font-size:16px; display:none;" title="Sync to Master Index">📥</button>
+            <button id="refresh-scan-btn" style="border:none; background:transparent; cursor:pointer; font-size:16px;" title="Refresh Scan">🔄</button>
+          </div>
+      </div>
+      
+      <div id="scan-results" style="padding: 0; overflow-y: auto; flex: 1;">
+          <div style="padding:15px; color:#999; font-size:12px; font-style:italic; text-align:center;">
+              Select a Google Doc to scan...
+          </div>
+      </div>
   </div>
 
   <div id="name-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
@@ -82,16 +91,6 @@
         <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;"><tbody id="meta-table-body"></tbody></table>
         <h4 style="margin: 0 0 10px 0; border-bottom: 1px solid #eee; padding-bottom: 5px;">Version History</h4>
         <div id="versions-list" style="font-size: 12px; color: #444;"></div>
-    </div>
-  </div>
-
-  <div id="comments-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
-    <div style="background: white; padding: 0; border-radius: 8px; width: 400px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 4px 15px rgba(0,0,0,0.2); overflow: hidden;">
-        <div style="padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; background: #f8f9fa;">
-            <h3 id="comments-title" style="margin: 0; font-size: 16px;">Comments</h3>
-            <button id="close-comments-btn" style="border: none; background: none; font-size: 20px; cursor: pointer;">&times;</button>
-        </div>
-        <div id="comments-list" style="padding: 15px; overflow-y: auto; flex: 1;"></div>
     </div>
   </div>
 

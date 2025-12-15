@@ -8,7 +8,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const webview = document.getElementById('doc-view');
     const searchBox = document.getElementById('search-box');
     const searchContentCheck = document.getElementById('search-content-check');
-    const dailyBtn = document.getElementById('daily-btn'); 
+    
+    // TOOLBAR BUTTONS
+    const dailyBtn = document.getElementById('daily-btn');
+    
+    // SCANNER ELEMENTS
+    const scanResults = document.getElementById('scan-results');
+    const syncBtn = document.getElementById('sync-btn');
+    const refreshScanBtn = document.getElementById('refresh-scan-btn');
     
     // COLLAPSIBLE ELEMENTS
     const recentHeader = document.getElementById('recent-header');
@@ -21,28 +28,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const createBtn = document.getElementById('create-btn');
     const cancelBtn = document.getElementById('cancel-btn');
 
-    // DETAILS & COMMENTS ELEMENTS
+    // DETAILS MODAL ELEMENTS
     const detailsModal = document.getElementById('details-modal');
     const detailsTitle = document.getElementById('details-title');
     const metaTable = document.getElementById('meta-table-body');
     const versionsList = document.getElementById('versions-list');
     const closeDetailsBtn = document.getElementById('close-details-btn');
-    const commentsModal = document.getElementById('comments-modal');
-    const commentsTitle = document.getElementById('comments-title');
-    const commentsList = document.getElementById('comments-list');
-    const closeCommentsBtn = document.getElementById('close-comments-btn');
-    
-    // METADATA PANE ELEMENTS
-    const metaLoading = document.getElementById('meta-loading');
-    const metaTags = document.getElementById('meta-tags');
-    const metaTasks = document.getElementById('meta-tasks');
-    const metaLinks = document.getElementById('meta-links');
 
     // -- STATE --
     let searchTimeout = null;
     let pendingCreation = null; 
     let isRecentExpanded = true;
     let copiedFile = null; 
+    
+    // GLOBAL CURRENT FILE STATE (For Syncing)
+    let currentFileId = null;
+    let currentFileName = null;
+    let currentScanItems = [];
+
     const MAX_RECENT = 10;
 
     // =========================================================================
@@ -67,7 +70,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- DAILY DIARY CLICK HANDLER ---
+    // =========================================================================
+    // 1. TOOLBAR & BUTTON HANDLERS
+    // =========================================================================
+
+    // --- DAILY DIARY CLICK ---
     if (dailyBtn) {
         dailyBtn.onclick = async () => {
             dailyBtn.disabled = true;
@@ -77,7 +84,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const file = await window.api.openDailyDiary();
                 if (file) {
                     status.innerText = `Opened Diary: ${file.name}`;
-                    // FORCE EDIT MODE HERE 👇
                     openFile(file, 'edit'); 
                 }
             } catch (err) {
@@ -91,9 +97,62 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // =========================================================================
-    // 0.5 COLLAPSIBLE LOGIC
-    // =========================================================================
+// --- SYNC TO SHEET CLICK ---
+    if (syncBtn) {
+        syncBtn.onclick = async () => {
+            // Safety check: ensure we have items to sync and a valid file ID
+            if (currentScanItems.length === 0 || !currentFileId) {
+                console.warn("Sync aborted: No items or no file ID.");
+                return;
+            }
+            
+            // UI Feedback: Change icon to hourglass and disable button
+            const originalIcon = syncBtn.innerText;
+            syncBtn.innerText = '⏳';
+            syncBtn.disabled = true;
+            status.innerText = "Syncing to Master Index...";
+            
+            try {
+               // Call the backend API
+               // We expect it to return 'true' if successful, or throw an error if failed
+               const success = await window.api.syncToSheet({ 
+                   fileId: currentFileId,
+                   fileName: currentFileName,
+                   items: currentScanItems 
+               });
+               
+               if (success) {
+                   status.innerText = "Synced successfully!";
+                   alert("Success! Data added to 'Master Index' spreadsheet.\n\nPlease check your Google Drive Root folder.");
+               } else {
+                   // This happens if the backend catches an error but returns 'false' instead of throwing
+                   throw new Error("Unknown backend error (API returned false). Check terminal logs.");
+               }
+
+            } catch (err) {
+               console.error("Sync Error:", err);
+               status.innerText = "Sync failed.";
+               
+               // SHOW THE REAL ERROR TO THE USER
+               // This is the crucial part for troubleshooting 403/404 errors
+               alert("SYNC FAILED:\n\n" + err.message + "\n\nTip: If this is a 'Permission' error, try deleting token.json and restarting.");
+            
+            } finally {
+               // Reset UI state regardless of success or failure
+               syncBtn.innerText = originalIcon;
+               syncBtn.disabled = false;
+            }
+        };
+    }
+
+    // --- REFRESH SCAN CLICK ---
+    if (refreshScanBtn) {
+        refreshScanBtn.onclick = () => {
+            if (currentFileId) performScan(currentFileId, 'application/vnd.google-apps.document');
+        };
+    }
+
+    // --- COLLAPSIBLE RECENT FILES ---
     if (recentHeader && recentList && recentArrow) {
         recentHeader.onclick = () => {
             isRecentExpanded = !isRecentExpanded;
@@ -103,7 +162,176 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 1. HELPER FUNCTIONS
+    // 2. CORE LOGIC: OPEN FILE & SCANNER
+    // =========================================================================
+    
+    function openFile(file, mode = 'preview') {
+        if (!file.webViewLink) return;
+        
+        // 1. Update Global State
+        currentFileId = file.id;
+        currentFileName = file.name;
+        
+        status.innerText = `Loading: ${file.name}...`;
+        let link = file.webViewLink;
+        
+        // 2. Handle Mode (Edit vs Preview)
+        if (mode === 'edit') {
+            link = link.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
+        } else {
+            link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
+        }
+
+        webview.src = link;
+        addToRecents(file); 
+        
+        // 3. Trigger Scanner
+        performScan(file.id, file.mimeType);
+    }
+
+    async function performScan(fileId, mimeType) {
+        if (!scanResults) return;
+        
+        // Reset State
+        currentScanItems = [];
+        if (syncBtn) syncBtn.style.display = 'none';
+
+        // Only scan Google Docs
+        if (mimeType !== 'application/vnd.google-apps.document') {
+            scanResults.innerHTML = '<div style="padding:15px; color:#ccc; font-size:12px;">Scanner only works on Google Docs</div>';
+            return;
+        }
+
+        scanResults.innerHTML = '<div style="padding:15px; color:#666; font-size:12px;">Scanning document structure...</div>';
+
+        try {
+            const doc = await window.api.scanContent(fileId);
+            if (!doc || !doc.content) {
+                scanResults.innerHTML = '<div style="padding:15px; color:#ccc; font-size:12px;">Could not read content.</div>';
+                return;
+            }
+
+            renderScanResults(doc.content, fileId);
+
+        } catch (e) {
+            console.error(e);
+            scanResults.innerHTML = '<div style="padding:15px; color:red; font-size:12px;">Scan failed. Check API permissions.</div>';
+        }
+    }
+
+function renderScanResults(content, fileId) {
+        scanResults.innerHTML = '';
+        currentScanItems = []; 
+        
+        // Track the "Nearest Header"
+        let currentSection = { title: 'Top', id: '' }; // Default to empty if at top
+        let itemsFound = 0;
+
+        content.forEach(element => {
+            if (element.paragraph) {
+                const style = element.paragraph.paragraphStyle?.namedStyleType;
+                const textElements = element.paragraph.elements;
+                let fullText = textElements.map(e => e.textRun?.content).join('').trim();
+                
+                if (!fullText) return;
+
+                // A. IS IT A HEADING? -> Update currentSection
+                if (style && style.includes('HEADING')) {
+                    // Update the "Nearest Header" tracker
+                    currentSection = { 
+                        title: fullText, 
+                        id: element.paragraph.paragraphStyle.headingId || '' 
+                    };
+                    
+                    // (Optional) Draw Section Header in UI
+                    const headEl = document.createElement('div');
+                    headEl.style.cssText = "padding: 8px 15px; background: #e8f0fe; font-weight:bold; font-size:12px; color:#1967d2; border-top:1px solid #eee; margin-top:5px;";
+                    headEl.innerText = fullText;
+                    if(currentSection.id) {
+                         headEl.style.cursor = "pointer";
+                         headEl.onclick = () => {
+                             webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${currentSection.id}`;
+                         };
+                    }
+                    scanResults.appendChild(headEl);
+                } 
+                
+                // B. IS IT A TASK?
+                else if (fullText.startsWith('[]') || fullText.startsWith('[ ]') || fullText.toLowerCase().startsWith('todo:')) {
+                    itemsFound++;
+                    let cleanText = fullText.replace(/^\[\s*\]/, '').replace(/^todo:/i, '').trim();
+                    
+                    // SAVE DATA with HEADER ID
+                    currentScanItems.push({ 
+                        type: 'Task', 
+                        text: cleanText,
+                        headerId: currentSection.id // <--- CAPTURE NEAREST HEADER
+                    });
+
+                    const taskEl = document.createElement('div');
+                    taskEl.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; display:flex; align-items:start;";
+                    taskEl.innerHTML = `<span style="margin-right:6px; color:#ea4335;">☐</span> <span>${cleanText}</span>`;
+                    scanResults.appendChild(taskEl);
+                }
+
+                // C. IS IT A TAG?
+                else if (fullText.includes('#')) {
+                    const matches = fullText.match(/(#[a-zA-Z0-9-_]+)/g);
+                    if (matches) {
+                        itemsFound++;
+                        const tagRow = document.createElement('div');
+                        tagRow.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0;";
+                        
+                        matches.forEach(tag => {
+                            // SAVE DATA with HEADER ID
+                            currentScanItems.push({ 
+                                type: 'Tag', 
+                                text: tag,
+                                headerId: currentSection.id // <--- CAPTURE NEAREST HEADER
+                            });
+
+                            const badge = document.createElement('span');
+                            badge.innerText = tag;
+                            badge.style.cssText = "background:#34a853; color:white; padding:2px 6px; border-radius:10px; font-size:10px; margin-right:4px;";
+                            tagRow.appendChild(badge);
+                        });
+                        scanResults.appendChild(tagRow);
+                    }
+                }
+
+                // D. IS IT A KEY-VALUE?
+                else if (fullText.includes('::')) {
+                    const parts = fullText.split('::');
+                    if (parts.length === 2) {
+                        itemsFound++;
+                        const key = parts[0].trim();
+                        const val = parts[1].trim();
+                        
+                        // SAVE DATA with HEADER ID
+                        currentScanItems.push({ 
+                            type: 'Meta', 
+                            text: `${key}: ${val}`,
+                            headerId: currentSection.id // <--- CAPTURE NEAREST HEADER
+                        });
+
+                        const kvRow = document.createElement('div');
+                        kvRow.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; color:#444;";
+                        kvRow.innerHTML = `<strong>${key}:</strong> ${val}`;
+                        scanResults.appendChild(kvRow);
+                    }
+                }
+            }
+        });
+
+        if (syncBtn) syncBtn.style.display = itemsFound > 0 ? 'block' : 'none';
+
+        if (itemsFound === 0) {
+            scanResults.innerHTML = '<div style="padding:15px; color:#999; font-style:italic; font-size:12px;">No structural data found.<br>Try adding Headings, TODOs, or #tags.</div>';
+        }
+    }
+
+    // =========================================================================
+    // 3. HELPER FUNCTIONS
     // =========================================================================
     
     function formatDate(isoString) {
@@ -129,55 +357,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return '📄';
     }
 
-    function linkify(text) {
-        if (!text) return '';
-        const urlRegex = /(\b(https?):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
-        return text.replace(urlRegex, (url) => `<a href="#" onclick="window.api.openExternal('${url}'); return false;" style="color:#1a73e8; text-decoration:underline;">${url}</a>`);
-    }
-
-    window.jumpToComment = (fileId, commentId) => {
-        const deepLink = `https://docs.google.com/document/d/${fileId}/edit?disco=${commentId}`;
-        status.innerText = "Locating comment...";
-        webview.src = deepLink;
-        if (commentsModal) commentsModal.style.display = 'none';
-    };
-
-    function createCommentHTML(comment, fileId) {
-        const date = new Date(comment.createdTime).toLocaleString();
-        const author = comment.author ? comment.author.displayName : 'Unknown';
-        const content = linkify(comment.content); 
-        return `
-            <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f0;">
-                <div style="font-size: 12px; color: #5f6368; margin-bottom: 4px; display: flex; justify-content: space-between;">
-                    <span><strong>${author}</strong> • ${date}</span>
-                    <button onclick="window.jumpToComment('${fileId}', '${comment.id}')" style="float: right; border: 1px solid #dadce0; background: #fff; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: #1a73e8;">🎯 Locate</button>
-                </div>
-                <div style="font-size: 14px; color: #202124; white-space: pre-wrap; margin-top: 5px;">${content}</div>
-                ${comment.replies && comment.replies.length > 0 ? `<div style="margin-left: 15px; margin-top: 8px; border-left: 2px solid #ddd; padding-left: 10px;">${comment.replies.map(reply => createCommentHTML(reply, fileId)).join('')}</div>` : ''}
-            </div>
-        `;
-    }
-
     // =========================================================================
-    // 2. OPEN FILE LOGIC (UPDATED FOR MODES)
+    // 4. RECENTS & TREE VIEW
     // =========================================================================
-    function openFile(file, mode = 'preview') {
-        if (!file.webViewLink) return;
-        status.innerText = `Loading: ${file.name}...`;
-        let link = file.webViewLink;
-        
-        if (mode === 'edit') {
-            // FORCE EDIT MODE
-            link = link.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit');
-        } else {
-            // FORCE PREVIEW MODE (Default)
-            link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview');
-        }
-
-        webview.src = link;
-        addToRecents(file); 
-        scanCommentsForMetadata(file.id);
-    }
 
     function addToRecents(file) {
         let recents = loadRecents().filter(f => f.id !== file.id);
@@ -205,76 +387,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else { if (recentSection) recentSection.style.display = 'none'; }
     }
 
-    async function scanCommentsForMetadata(fileId) {
-        if(!metaLoading) return;
-        metaLoading.style.display = 'block';
-        metaTags.innerHTML = '<span style="color:#ccc; font-size:12px;">Scanning...</span>';
-        metaTasks.innerHTML = ''; metaLinks.innerHTML = '';
-        try {
-            const comments = await window.api.getFileComments(fileId);
-            const tags = [], tasks = [], links = [];
-            const scanList = (list) => {
-                list.forEach(c => {
-                    const lines = c.content.split('\n');
-                    lines.forEach(line => {
-                        const text = line.trim();
-                        if (!text) return;
-                        const tagMatches = text.match(/(^|\s)(#[a-zA-Z0-9-_]+)(?=$|[\s.,!?])/g);
-                        if (tagMatches) tagMatches.forEach(t => tags.push({ text: t.trim(), commentId: c.id }));
-                        const taskRegex = /^(todo:|\[\s*\]|-\s*\[\s*\])/i;
-                        if (taskRegex.test(text)) {
-                            tasks.push({ text: text.replace(taskRegex, '').trim(), commentId: c.id, author: c.author.displayName });
-                        }
-                        if (text.includes('http')) {
-                            const urlMatches = text.match(/(https?:\/\/[^\s]+)/g);
-                            if (urlMatches) urlMatches.forEach(u => links.push({ url: u, commentId: c.id }));
-                        }
-                    });
-                    if (c.replies) scanList(c.replies);
-                });
-            };
-            scanList(comments);
-
-            // Render
-            if (tags.length > 0) {
-                const uniqueTags = [...new Set(tags.map(t => t.text))];
-                metaTags.innerHTML = '';
-                uniqueTags.forEach(tagText => {
-                    const tagEl = document.createElement('span');
-                    tagEl.innerText = tagText;
-                    tagEl.style.cssText = "background:#e8f0fe; color:#1967d2; padding:2px 8px; border-radius:12px; font-size:11px; cursor:pointer; border:1px solid #d2e3fc;";
-                    tagEl.onclick = () => { if (searchBox) { searchBox.value = tagText; if (searchContentCheck) searchContentCheck.checked = true; searchBox.dispatchEvent(new Event('input')); } };
-                    metaTags.appendChild(tagEl);
-                });
-            } else { metaTags.innerHTML = '<span style="color:#999; font-size:12px; font-style:italic;">No #tags found</span>'; }
-
-            if (tasks.length > 0) {
-                metaTasks.innerHTML = '';
-                tasks.forEach(t => {
-                    const row = document.createElement('div');
-                    row.style.cssText = "display:flex; margin-bottom:8px; font-size:12px; color:#333; cursor:pointer; align-items:flex-start; padding: 2px 0;";
-                    row.innerHTML = `<span style="margin-right:6px; color:#5f6368; font-size:14px;">☐</span><span style="line-height:1.4;">${t.text}</span>`;
-                    row.onclick = () => window.jumpToComment(fileId, t.commentId);
-                    row.onmouseover = () => { row.style.color = '#1a73e8'; row.style.background = '#f1f3f4'; };
-                    row.onmouseout = () => { row.style.color = '#333'; row.style.background = 'transparent'; };
-                    metaTasks.appendChild(row);
-                });
-            } else { metaTasks.innerHTML = '<div style="color:#999; font-size:12px; font-style:italic;">No tasks found</div>'; }
-
-            if (links.length > 0) {
-                metaLinks.innerHTML = '';
-                links.forEach(l => {
-                    const row = document.createElement('div');
-                    row.style.cssText = "margin-bottom:6px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;";
-                    row.innerHTML = `<a href="#" onclick="window.api.openExternal('${l.url}'); return false;" style="color:#1a73e8; text-decoration:none;">🔗 ${l.url}</a>`;
-                    metaLinks.appendChild(row);
-                });
-            } else { metaLinks.innerHTML = '<div style="color:#999; font-size:12px; font-style:italic;">No links found</div>'; }
-        } catch (e) { console.error("Meta scan failed", e); } finally { metaLoading.style.display = 'none'; }
-    }
-
     // =========================================================================
-    // 3. MENU ACTIONS
+    // 5. MENU ACTIONS & TREE
     // =========================================================================
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
@@ -296,16 +410,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (info.revisions.length > 0) versionsList.innerHTML = info.revisions.map(rev => `<div>${formatDate(rev.modifiedTime)} - ${rev.lastModifyingUser?.displayName}</div>`).join('');
                     else versionsList.innerHTML = 'No versions.';
                 } catch (err) { versionsList.innerText = "Error."; }
-            }
-            if (action === 'comments') {
-                if (!commentsModal) return;
-                commentsTitle.innerText = `Comments: ${data.name}`;
-                commentsList.innerHTML = 'Loading...';
-                commentsModal.style.display = 'flex';
-                try {
-                    const comments = await window.api.getFileComments(data.id);
-                    commentsList.innerHTML = comments.length ? comments.map(c => createCommentHTML(c, data.id)).join('') : 'No comments.';
-                } catch (err) { commentsList.innerText = "Error."; }
             }
             if (action === 'edit') {
                 status.innerText = `Opening editor...`;
@@ -332,7 +436,6 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeModal() { if (modal) modal.style.display = 'none'; pendingCreation = null; }
     if (cancelBtn) cancelBtn.onclick = closeModal;
     if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
-    if (closeCommentsBtn) closeCommentsBtn.onclick = () => { commentsModal.style.display = 'none'; };
 
     if (createBtn) {
         createBtn.onclick = async () => {
@@ -349,7 +452,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (nameInput) nameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') createBtn.click(); });
 
     // =========================================================================
-    // 4. SEARCH & TREE VIEW
+    // 6. SEARCH & TREE VIEW
     // =========================================================================
     if (window.api.onAuthSuccess) { window.api.onAuthSuccess(() => init()); }
     webview.addEventListener('ipc-message', (event) => { if (event.channel === 'header-context-menu') window.api.showHeaderMenu(event.args[0]); });

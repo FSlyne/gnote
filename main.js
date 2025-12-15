@@ -292,6 +292,133 @@ ipcMain.handle('drive:openDailyDiary', async () => {
     }
   });
 
+  // main.js - Add these handlers
+
+// L. Get All Tags from Master Index
+ipcMain.handle('sheet:getAllTags', async () => {
+  if (!authClient) return {};
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    // 1. Find the Sheet ID
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+    if (search.data.files.length === 0) return {}; // No index yet
+    const spreadsheetId = search.data.files[0].id;
+
+    // 2. Read the whole sheet (Columns B=FileID, D=Type, E=Content)
+    // Assuming structure: Date | FileID | HeaderID | Type | Content
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId, range: 'Sheet1!B:E'
+    });
+
+    const rows = res.data.values || [];
+    const tagMap = {}; // { "#urgent": ["fileId1", "fileId2"] }
+
+    // 3. Process Rows (Skip header)
+    rows.slice(1).forEach(row => {
+      const fileId = row[0];
+      const type = row[2];
+      const content = row[3];
+
+      if (type === 'Tag' && content && fileId) {
+        if (!tagMap[content]) tagMap[content] = new Set();
+        tagMap[content].add(fileId);
+      }
+    });
+
+    // Convert Sets to Arrays for transport
+    for (const tag in tagMap) {
+      tagMap[tag] = Array.from(tagMap[tag]);
+    }
+
+    return tagMap;
+  } catch (err) {
+    console.error("Tag Fetch Error:", err);
+    return {};
+  }
+});
+
+// M. Get Specific Files by IDs (For the filtered view)
+// main.js - REPLACE the 'drive:getFilesByIds' handler with this:
+
+// M. Get Specific Files by IDs (Corrected: Uses 'get' instead of 'list')
+ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {
+  if (!authClient || !fileIds || fileIds.length === 0) return [];
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  // Safety: Limit to the first 20 files to prevent rate limiting/lag
+  const targetIds = [...new Set(fileIds)].slice(0, 20); // Remove duplicates + slice
+  
+  try {
+    // We must fetch each file individually because we can't 'search' by ID
+    const promises = targetIds.map(id => 
+       drive.files.get({
+          fileId: id,
+          fields: 'id, name, mimeType, webViewLink, iconLink, shortcutDetails'
+       })
+       .then(res => res.data)
+       .catch(err => {
+           console.log(`Could not find file ${id} (might be deleted/no access)`);
+           return null; 
+       })
+    );
+
+    // Wait for all requests to finish
+    const results = await Promise.all(promises);
+    
+    // Filter out any 'null' results (deleted files)
+    return results.filter(f => f !== null);
+
+  } catch(e) {
+      console.error("Error fetching file batch:", e);
+      return [];
+  }
+});
+
+// main.js - Add this new handler
+
+// N. Get ALL Items (Tasks/Tags) for the Dashboard
+ipcMain.handle('sheet:getAllItems', async () => {
+  if (!authClient) return [];
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  try {
+    // 1. Find the Sheet
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+    if (search.data.files.length === 0) return [];
+    const spreadsheetId = search.data.files[0].id;
+
+    // 2. Read All Data (A=Date, B=FileID, C=HeaderID, D=Type, E=Content)
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId, range: 'Sheet1!A2:E' // Skip header row
+    });
+
+    const rows = res.data.values || [];
+    
+    // 3. Convert to Objects
+    // Row format: [Date, FileID, HeaderID, Type, Content]
+    return rows.map(row => ({
+        date: row[0],
+        fileId: row[1],
+        headerId: row[2],
+        type: row[3],
+        content: row[4]
+    })).filter(item => item.content); // Filter out empty rows
+
+  } catch (err) {
+    console.error("Dashboard Fetch Error:", err);
+    return [];
+  }
+});
+
 ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url));
 
 // ---------------------------------------------------------

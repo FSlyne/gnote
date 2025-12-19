@@ -33,26 +33,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const docStructure = document.getElementById('doc-structure');
     const globalTagsContainer = document.getElementById('global-tags-container');
     const refreshTagsBtn = document.getElementById('refresh-tags-btn');
-    const syncBtn = document.getElementById('sync-btn'); // Note: You might need to add this button dynamically or in HTML if missing
 
     // DASHBOARD OVERLAY
     const dashboardView = document.getElementById('dashboard-view');
     const dashboardTable = document.getElementById('dashboard-table-body');
     const closeDashBtn = document.getElementById('close-dash-btn');
 
-    // STUDY MODE OVERLAY
-    // (Assuming you added the HTML for study mode from previous steps, if not, these will just be null and ignored)
-    const studyView = document.getElementById('study-view');
-    const cardFront = document.getElementById('card-front');
-    const cardBack = document.getElementById('card-back');
-    const cardAnswer = document.getElementById('card-answer');
-    const btnShow = document.getElementById('btn-show');
-    const studyCount = document.getElementById('study-count');
-    const cardSourceLink = document.getElementById('card-source-link');
-    const btnAgain = document.getElementById('btn-again');
-    const btnGood = document.getElementById('btn-good');
-    const btnEasy = document.getElementById('btn-easy');
-    const closeStudyBtn = document.getElementById('close-study-btn');
+    // GRAPH VIEW
+    const graphView = document.getElementById('graph-view');
+    const closeGraphBtn = document.getElementById('close-graph-btn');
+    const networkContainer = document.getElementById('network-container');
 
     // MODALS
     const modal = document.getElementById('name-modal');
@@ -71,10 +61,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // =========================================================================
     
     let searchTimeout = null;
-    let pendingCreation = null; 
+    let pendingCreation = null;
+    let pendingRename = null; // NEW: Track rename state
     let isRecentExpanded = true;
-    let copiedFile = null; 
     let isResizing = false;
+    
+    // Clipboard State
+    // format: { id, name, parentId, mode: 'move'|'shortcut' }
+    let clipboardItem = null; 
     
     // Current File Data
     let currentFileId = null;
@@ -83,8 +77,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Global Data
     let globalTagMap = {}; 
-    let studyQueue = [];
-    let currentCard = null;
 
     const MAX_RECENT = 10;
 
@@ -98,7 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const isHidden = scannerPane.style.display === 'none';
             scannerPane.style.display = isHidden ? 'flex' : 'none';
             if (dragHandle) dragHandle.style.display = isHidden ? 'block' : 'none';
-            togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫'; // Update Icon
+            togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫'; 
         };
     }
 
@@ -108,21 +100,14 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault(); 
             isResizing = true;
             dragHandle.classList.add('active');
-            
-            // Disable webview interaction so mouse doesn't get stuck
             if (webview) webview.style.pointerEvents = 'none';
-            
             document.body.style.userSelect = 'none';
             document.body.style.cursor = 'col-resize';
         });
 
         document.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
-            
-            // Calculate width from right side
             const newWidth = window.innerWidth - e.clientX;
-            
-            // Limits
             if (newWidth > 150 && newWidth < 600) {
                 scannerPane.style.width = `${newWidth}px`;
             }
@@ -132,10 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isResizing) {
                 isResizing = false;
                 dragHandle.classList.remove('active');
-                
-                // Re-enable webview
                 if (webview) webview.style.pointerEvents = 'auto';
-                
                 document.body.style.userSelect = ''; 
                 document.body.style.cursor = '';     
             }
@@ -148,18 +130,44 @@ document.addEventListener('DOMContentLoaded', () => {
     if (webview) {
         webview.addEventListener('render-process-gone', (e) => {
             console.warn("Webview crashed:", e.reason);
-            status.innerText = "Viewer crashed. Reloading...";
-            webview.reload();
+            status.innerText = "Viewer crashed. Please select the file again.";
         });
+        
         webview.addEventListener('did-fail-load', (e) => {
-            if (e.errorCode !== -3) { // -3 is strict blocked, usually fine
-                status.innerText = "Error loading doc. Retrying...";
-                setTimeout(() => webview.reload(), 1000);
+            if (e.errorCode !== -3) { 
+                console.error("Load failed:", e.errorDescription, "Code:", e.errorCode);
+                status.innerText = "Error loading doc.";
             }
         });
+
         webview.addEventListener('did-finish-load', () => {
             if (status.innerText.includes('Loading') || status.innerText.includes('Opened Diary')) {
                 status.innerText = 'Ready';
+            }
+        });
+
+        // 1. Intercept "New Window" clicks (standard Google Doc links)
+        webview.addEventListener('new-window', (e) => {
+            // STOP the internal popup
+            e.preventDefault(); 
+            
+            const url = e.url;
+            console.log("Link Clicked:", url); // Debug log
+            
+            // Send to real browser
+            if (url.startsWith('http')) {
+                status.innerText = `Opening link...`;
+                window.api.openExternal(url); 
+            }
+        });
+
+        // 2. Intercept direct navigation (just in case)
+        webview.addEventListener('will-navigate', (e) => {
+            const url = e.url;
+            // If the user tries to click a link that isn't Google Docs/Drive/Login
+            if (url.startsWith('http') && !url.includes('google.com')) {
+                e.preventDefault();
+                window.api.openExternal(url);
             }
         });
     }
@@ -244,7 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 6. SCANNER LOGIC
+    // 6. SCANNER LOGIC (With Header Dragging for Links)
     // =========================================================================
 
     async function performScan(fileId, mimeType) {
@@ -255,7 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (localTagsSection) localTagsSection.style.display = 'none';
 
         if (mimeType !== 'application/vnd.google-apps.document') {
-            docStructure.innerHTML = '<div style="padding:15px; color:#ccc; font-size:12px;">Scanner only works on Google Docs</div>';
+            docStructure.innerHTML = `<div style="padding:15px; color:#ccc; font-size:12px;">Scanner ignored type:<br>${mimeType}<br><br>(Only Google Docs supported)</div>`;
             return;
         }
 
@@ -292,15 +300,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // HEADING
                 if (style && style.includes('HEADING')) {
-                    currentSection = { 
-                        title: fullText, 
-                        id: element.paragraph.paragraphStyle.headingId || '' 
-                    };
+                    itemsFound++;
+                    
+                    const thisHeaderId = element.paragraph.paragraphStyle.headingId || '';
+                    const thisHeaderTitle = fullText;
+
+                    currentSection = { title: thisHeaderTitle, id: thisHeaderId };
+                    
                     const headEl = document.createElement('div');
+
+                    // --- DRAG LOGIC (Create Link) ---
+                    headEl.draggable = true;
+                    headEl.addEventListener('dragstart', (e) => {
+                        e.dataTransfer.setData('application/json', JSON.stringify({
+                            type: 'section',
+                            sourceFileId: fileId,
+                            headerId: thisHeaderId,   
+                            title: thisHeaderTitle    
+                        }));
+                        e.dataTransfer.effectAllowed = 'all'; 
+                        headEl.style.opacity = '0.5';
+                    });
+                    headEl.addEventListener('dragend', () => headEl.style.opacity = '1');
+                    // -----------------------
+
                     headEl.style.cssText = "padding: 8px 15px; background: #e8f0fe; font-weight:bold; font-size:12px; color:#1967d2; border-top:1px solid #eee; margin-top:5px; cursor:pointer;";
                     headEl.innerText = fullText;
-                    if(currentSection.id) {
-                         headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${currentSection.id}`;
+                    if(thisHeaderId) {
+                         headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${thisHeaderId}`;
                     }
                     docStructure.appendChild(headEl);
                 } 
@@ -362,7 +389,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         
-        // Add Manual Sync Button if not present in HTML
+        // Add Manual Sync Button
         if (!document.getElementById('manual-sync-btn') && itemsFound > 0) {
             const btn = document.createElement('button');
             btn.id = 'manual-sync-btn';
@@ -394,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 7. DASHBOARD & STUDY MODES
+    // 7. DASHBOARD & FILE OPS
     // =========================================================================
 
     // DASHBOARD
@@ -437,85 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (closeDashBtn) closeDashBtn.onclick = () => dashboardView.style.display = 'none';
 
-    // STUDY MODE (Spaced Repetition)
-    // Add "Study" button if not in HTML
-    if (!document.getElementById('study-btn') && document.getElementById('toolbar')) {
-        const studyBtn = document.createElement('button');
-        studyBtn.id = 'study-btn';
-        studyBtn.innerHTML = '<span style="margin-right:6px;">🧠</span> Study';
-        studyBtn.style.cssText = "flex:1; padding: 8px; background-color: #fff; color: #3c4043; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; display: flex; align-items: center; justify-content: center;";
-        document.getElementById('toolbar').appendChild(studyBtn);
-        
-        studyBtn.onclick = async () => {
-            if(!studyView) return;
-            studyView.style.display = 'flex';
-            cardFront.innerText = "Loading cards...";
-            studyQueue = await window.api.getDueCards();
-            
-            if (studyQueue.length === 0) {
-                cardFront.innerText = "All caught up! 🎉";
-                if(btnShow) btnShow.style.display = 'none';
-                if(studyCount) studyCount.innerText = "Cards due: 0";
-            } else {
-                loadNextCard();
-            }
-        };
-    }
-
-    function loadNextCard() {
-        if (studyQueue.length === 0) {
-            cardFront.innerText = "Session Complete! 🎉";
-            if(cardBack) cardBack.style.display = 'none';
-            if(btnShow) btnShow.style.display = 'none';
-            return;
-        }
-
-        currentCard = studyQueue.shift();
-        if(studyCount) studyCount.innerText = `Cards due: ${studyQueue.length + 1}`;
-        
-        const parts = currentCard.content.split('::');
-        cardFront.innerText = parts[0] || "?";
-        if(cardAnswer) cardAnswer.innerText = parts[1] || "...";
-        
-        if(cardBack) cardBack.style.display = 'none';
-        if(btnShow) btnShow.style.display = 'block';
-        
-        if(cardSourceLink) {
-            cardSourceLink.onclick = (e) => {
-                e.preventDefault();
-                studyView.style.display = 'none';
-                let link = `https://docs.google.com/document/d/${currentCard.fileId}/edit`;
-                if (currentCard.headerId) link += `#heading=${currentCard.headerId}`;
-                webview.src = link;
-            };
-        }
-    }
-
-    if(btnShow) btnShow.onclick = () => {
-        cardBack.style.display = 'block';
-        btnShow.style.display = 'none';
-    };
-
-    async function submitGrade(quality) {
-        if (!currentCard) return;
-        loadNextCard();
-        await window.api.gradeCard({
-            rowIndex: currentCard.rowIndex,
-            quality: quality,
-            currentInterval: currentCard.interval,
-            currentEase: currentCard.ease
-        });
-    }
-
-    if(btnAgain) btnAgain.onclick = () => submitGrade(0);
-    if(btnGood) btnGood.onclick = () => submitGrade(3);
-    if(btnEasy) btnEasy.onclick = () => submitGrade(5);
-    if(closeStudyBtn) closeStudyBtn.onclick = () => studyView.style.display = 'none';
-
-    // =========================================================================
-    // 8. FILE TREE & OPERATIONS
-    // =========================================================================
-
+    // DAILY DIARY
     if (dailyBtn) {
         dailyBtn.onclick = async () => {
             dailyBtn.disabled = true;
@@ -562,9 +511,89 @@ document.addEventListener('DOMContentLoaded', () => {
         searchBox.addEventListener('input', performSearch);
     }
 
+    // --- GRAPH VIEW IMPLEMENTATION ---
+    if (document.getElementById('toolbar')) {
+        const graphBtn = document.createElement('button');
+        graphBtn.innerHTML = '🕸️ Graph';
+        graphBtn.style.cssText = "width:60px; padding: 8px; background-color: #fff; color: #5f6368; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; font-size: 13px; margin-left: 5px;";
+        document.getElementById('toolbar').appendChild(graphBtn);
+
+        function buildGraphData() {
+            const nodes = [];
+            const edges = [];
+            const processedFiles = new Set();
+
+            Object.keys(globalTagMap).forEach((tag) => {
+                nodes.push({ 
+                    id: tag, 
+                    label: tag, 
+                    color: '#34a853', 
+                    shape: 'hexagon', 
+                    size: 20,
+                    font: { color: 'white' }
+                });
+
+                globalTagMap[tag].forEach(fileId => {
+                    if (!processedFiles.has(fileId)) {
+                        nodes.push({ 
+                            id: fileId, 
+                            label: 'File ' + fileId.substr(0,4),
+                            color: '#4285f4',
+                            shape: 'dot',
+                            size: 10
+                        });
+                        processedFiles.add(fileId);
+                    }
+                    edges.push({ from: fileId, to: tag });
+                });
+            });
+            return { nodes, edges };
+        }
+
+        graphBtn.onclick = () => {
+            if(!graphView) return;
+            graphView.style.display = 'block';
+            const data = buildGraphData();
+            
+            const options = {
+                nodes: { borderWidth: 2 },
+                interaction: { hover: true },
+                physics: {
+                    stabilization: false,
+                    barnesHut: { gravitationalConstant: -3000 }
+                }
+            };
+            
+            if (window.vis) {
+                 const network = new window.vis.Network(networkContainer, data, options);
+                 network.on("click", function (params) {
+                    if (params.nodes.length > 0) {
+                        const nodeId = params.nodes[0];
+                        if (!nodeId.startsWith('#')) {
+                            graphView.style.display = 'none';
+                            webview.src = `https://docs.google.com/document/d/${nodeId}/edit`;
+                        }
+                    }
+                });
+            } else {
+                networkContainer.innerText = "Graph library not loaded.";
+            }
+        };
+        if(closeGraphBtn) closeGraphBtn.onclick = () => graphView.style.display = 'none';
+    }
+
     function openFile(file, mode = 'preview') {
         if (!file.webViewLink) return;
-        currentFileId = file.id;
+        
+        let targetId = file.id;
+        let targetMime = file.mimeType;
+        
+        if (file.mimeType === 'application/vnd.google-apps.shortcut' && file.shortcutDetails) {
+            targetId = file.shortcutDetails.targetId;
+            targetMime = file.shortcutDetails.targetMimeType;
+        }
+
+        currentFileId = targetId;
         currentFileName = file.name;
         status.innerText = `Loading: ${file.name}...`;
         
@@ -577,32 +606,69 @@ document.addEventListener('DOMContentLoaded', () => {
 
         webview.src = link;
         addToRecents(file); 
-        performScan(file.id, file.mimeType);
+        
+        performScan(targetId, targetMime);
     }
+
+    // =========================================================================
+    // 8. FILE TREE LOGIC (With Drag/Drop & Link Creation)
+    // =========================================================================
 
     function createTreeItem(file) {
       const isRealFolder = file.mimeType === 'application/vnd.google-apps.folder';
       const isShortcut = file.mimeType === 'application/vnd.google-apps.shortcut';
+      
+      // CHECK FOR PSEUDO-LINK (JUMP)
+      const isSectionLink = file.appProperties && file.appProperties.role === 'section_link';
+
       let isFolder = isRealFolder;
       if (isShortcut && file.shortcutDetails?.targetMimeType === 'application/vnd.google-apps.folder') isFolder = true;
       
       const node = document.createElement('div'); node.className = 'tree-node';
       node.dataset.id = file.id; 
-      const label = document.createElement('div'); label.className = 'tree-label'; label.draggable = true;
+      
+      const currentParentId = (file.parents && file.parents.length > 0) ? file.parents[0] : 'root';
+      node.dataset.parentId = currentParentId;
+
+      const label = document.createElement('div'); label.className = 'tree-label'; 
+      label.draggable = true; 
+      
       const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.innerText = isFolder ? '▶' : '';
-      label.innerHTML = `<span class="tree-icon">${getIcon(file.mimeType)}</span><span>${file.name}</span>`;
+      
+      // ICON LOGIC
+      let icon = getIcon(file.mimeType);
+      if (isSectionLink) icon = '🔖'; 
+      
+      label.innerHTML = `<span class="tree-icon">${icon}</span><span>${file.name}</span>`;
       label.prepend(arrow);
       
       const children = document.createElement('div'); children.className = 'tree-children';
       node.appendChild(label); node.appendChild(children);
 
+      // CLICK
       label.onclick = async (e) => {
         e.stopPropagation();
         document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
         label.classList.add('selected');
         
+        // 1. HANDLE SECTION LINK (The Portal)
+        if (isSectionLink) {
+            const srcId = file.appProperties.sourceFileId;
+            const headId = file.appProperties.headerId;
+            status.innerText = `Jumping to section in "${file.name}"...`;
+            
+            // Construct Deep Link
+            const deepLink = `https://docs.google.com/document/d/${srcId}/edit#heading=${headId}`;
+            webview.src = deepLink;
+            
+            // Also trigger a scan of the target so sidebar updates
+            performScan(srcId, 'application/vnd.google-apps.document');
+            return;
+        }
+
         if (!isFolder) { openFile(file); return; }
         
+        // FOLDER LOGIC
         if (children.style.display === 'block') {
             children.style.display = 'none'; arrow.innerText = '▶'; arrow.classList.remove('rotated');
         } else {
@@ -615,19 +681,139 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       };
 
+      // CONTEXT MENU
       label.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         window.api.showContextMenu({ 
-            name: file.name, link: file.webViewLink, isFolder: isFolder, id: file.id, parentId: (file.parents ? file.parents[0] : 'root'), hasCopiedFile: !!copiedFile, shortcutDetails: file.shortcutDetails
+            name: file.name, 
+            link: file.webViewLink, 
+            isFolder: isFolder, 
+            id: file.id, 
+            parentId: currentParentId, 
+            clipboardItem: clipboardItem, 
+            shortcutDetails: file.shortcutDetails
         });
       });
+
+      // DRAG START
+      label.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('application/json', JSON.stringify({
+              id: file.id,
+              name: file.name,
+              parentId: currentParentId
+          }));
+          e.dataTransfer.effectAllowed = 'copyMove';
+          label.style.opacity = '0.5';
+      });
+
+      label.addEventListener('dragend', () => label.style.opacity = '1');
+
+      // DROP LOGIC
+      const canDrop = isFolder;
+
+      if (canDrop) {
+          label.addEventListener('dragover', (e) => {
+              e.preventDefault(); 
+              e.dataTransfer.dropEffect = 'copy'; 
+              label.classList.add('drag-over');
+          });
+
+          label.addEventListener('dragleave', () => {
+              label.classList.remove('drag-over');
+          });
+
+          label.addEventListener('drop', async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              label.classList.remove('drag-over');
+
+              const rawData = e.dataTransfer.getData('application/json');
+              if (!rawData) return;
+              const dragData = JSON.parse(rawData);
+
+              // SCENARIO 1: DRAGGING A HEADER -> FOLDER (Create Link)
+              if (dragData.type === 'section') {
+                  const confirmLink = confirm(`Create a link to section "${dragData.title}" inside "${file.name}"?`);
+                  if (!confirmLink) return;
+
+                  status.innerText = `Linking "${dragData.title}"...`;
+                  try {
+                      await window.api.createSectionLink({
+                          parentId: file.id,
+                          name: dragData.title, // Name the file after the section
+                          sourceFileId: dragData.sourceFileId,
+                          headerId: dragData.headerId
+                      });
+                      
+                      status.innerText = "Link created!";
+                      refreshFolder(file.id); // Refresh this folder to show the new link
+                  } catch (err) {
+                      console.error(err);
+                      status.innerText = "Creation failed.";
+                  }
+                  return;
+              }
+
+              // SCENARIO 2: FILE -> FOLDER (Move / Standard Drag & Drop)
+              if (dragData.id) {
+                  if (dragData.id === file.id) return; 
+                  if (dragData.parentId === file.id) return; 
+
+                  const confirmMove = confirm(`Move "${dragData.name}" into "${file.name}"?`);
+                  if (!confirmMove) return;
+
+                  status.innerText = `Moving "${dragData.name}"...`;
+                  try {
+                      await window.api.moveFile({ 
+                          fileId: dragData.id, 
+                          oldParentId: dragData.parentId, 
+                          newParentId: file.id 
+                      });
+                      status.innerText = "Move successful!";
+                      await refreshFolder(file.id); // Dest
+                      if (dragData.parentId !== file.id) {
+                          await refreshFolder(dragData.parentId); // Source
+                      }
+                  } catch (err) {
+                      status.innerText = "Move failed.";
+                  }
+                  return;
+              }
+          });
+      }
 
       return node;
     }
 
     // =========================================================================
-    // 9. HELPERS (Recents, Icons, Modals)
+    // 9. HELPERS (Refresh, Recents, Icons, Modals)
     // =========================================================================
+
+    // NEW: Helper to refresh a specific folder without collapsing the whole tree
+    async function refreshFolder(folderId) {
+        if (!folderId || folderId === 'root') { 
+            init(); return; 
+        }
+
+        const folderNode = document.querySelector(`.tree-node[data-id="${folderId}"]`);
+        if (!folderNode) return; 
+
+        const childrenContainer = folderNode.querySelector('.tree-children');
+        const arrow = folderNode.querySelector('.tree-arrow');
+
+        const files = await window.api.listFiles(folderId);
+
+        childrenContainer.innerHTML = '';
+        if (files.length === 0) {
+            childrenContainer.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
+        } else {
+            files.forEach(f => childrenContainer.appendChild(createTreeItem(f)));
+        }
+
+        childrenContainer.style.display = 'block';
+        arrow.innerText = '▼';
+        arrow.classList.add('rotated');
+    }
 
     function addToRecents(file) {
         let recents = loadRecents().filter(f => f.id !== file.id);
@@ -659,7 +845,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     let isFolder = file.mimeType === 'application/vnd.google-apps.folder';
                     if (file.mimeType.includes('shortcut') && file.shortcutDetails?.targetMimeType.includes('folder')) isFolder = true;
                     window.api.showContextMenu({ 
-                        name: file.name, link: file.webViewLink, isFolder: isFolder, id: file.id, parentId: file.parentId || 'root', hasCopiedFile: !!copiedFile, shortcutDetails: file.shortcutDetails
+                        name: file.name, 
+                        link: file.webViewLink, 
+                        isFolder: isFolder, 
+                        id: file.id, 
+                        parentId: file.parentId || 'root', 
+                        clipboardItem: clipboardItem,
+                        shortcutDetails: file.shortcutDetails
                     });
                 });
                 recentList.appendChild(row);
@@ -679,14 +871,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Modal Helpers
-    function closeModal() { if (modal) modal.style.display = 'none'; pendingCreation = null; }
+    function closeModal() { 
+        if (modal) modal.style.display = 'none'; 
+        pendingCreation = null;
+        pendingRename = null; // Reset Rename state
+        if (createBtn) createBtn.innerText = "Create"; // Reset Button Text
+    }
     if (cancelBtn) cancelBtn.onclick = closeModal;
     if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
 
-    // Create File Logic (Corrected null check)
+    // Create / Rename File Logic
     if (createBtn) {
         createBtn.onclick = async () => {
             const name = nameInput.value.trim();
+            
+            // --- RENAME HANDLER ---
+            if (pendingRename) {
+                if (!name) return;
+                status.innerText = "Renaming...";
+                try {
+                    await window.api.renameFile({ fileId: pendingRename.id, newName: name });
+                    status.innerText = "Renamed!";
+                    refreshFolder(pendingRename.parentId);
+                    closeModal();
+                } catch (e) {
+                    console.error(e);
+                    status.innerText = "Rename failed.";
+                }
+                return;
+            }
+            
+            // --- CREATE HANDLER ---
             if (!name || !pendingCreation) return; 
 
             const folderId = pendingCreation.parentId;
@@ -701,21 +916,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const newFile = await window.api.createFile({ parentId: folderId, name: name, mimeType: mimeType });
                 status.innerText = "Created!";
-                // Try to insert into UI without full reload
-                const parentNode = document.querySelector(`.tree-node[data-id="${folderId}"]`);
-                if (parentNode) {
-                    const childrenContainer = parentNode.querySelector('.tree-children');
-                    const arrow = parentNode.querySelector('.tree-arrow');
-                    if (childrenContainer.innerText.includes('(empty)')) childrenContainer.innerHTML = '';
-                    const newItem = createTreeItem(newFile);
-                    childrenContainer.appendChild(newItem);
-                    childrenContainer.style.display = 'block';
-                    arrow.innerText = '▼';
-                    arrow.classList.add('rotated');
-                    newItem.querySelector('.tree-label').click();
-                } else {
-                    init();
-                }
+                refreshFolder(folderId);
             } catch (err) {
                 console.error(err);
                 status.innerText = "Error creating file.";
@@ -727,10 +928,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // Menu Actions Handler
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
+            // RENAME ACTION
+            if (action === 'rename') {
+                pendingRename = data; // { id, name, parentId }
+                modalTitle.innerText = "Rename File";
+                nameInput.value = data.name;
+                createBtn.innerText = "Rename"; // Switch button purpose
+                if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
+                return;
+            }
+
+            // CREATE ACTION
             if (action === 'create') {
                 pendingCreation = data; 
                 if (modalTitle) modalTitle.innerText = `Name your new ${data.type === 'folder' ? 'Folder' : 'File'}:`;
                 if (nameInput) nameInput.value = "";
+                if (createBtn) createBtn.innerText = "Create"; // Ensure button says Create
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
             if (action === 'details') {
@@ -752,11 +965,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (editLink.includes('/view')) editLink = editLink.replace(/\/view.*$/, '/edit');
                 webview.src = editLink;
             }
-            if (action === 'copy-ref') { copiedFile = data; status.innerText = `Copied "${data.name}".`; }
-            if (action === 'paste-shortcut' && copiedFile) {
-                status.innerText = `Creating shortcut...`;
-                await window.api.createShortcut({ targetId: copiedFile.id, parentId: data.parentId, name: copiedFile.name });
-                init(); 
+            
+            // --- CLIPBOARD ACTIONS ---
+            if (action === 'copy-ref') { 
+                clipboardItem = { ...data, mode: 'shortcut' }; 
+                status.innerText = `Copied Link to "${data.name}"`; 
+            }
+            if (action === 'cut-item') {
+                clipboardItem = { ...data, mode: 'move' };
+                status.innerText = `Cut "${data.name}" (Ready to paste)`;
+            }
+
+            if (action === 'paste-item' && clipboardItem) {
+                const destId = data.parentId; 
+                
+                if (clipboardItem.mode === 'shortcut') {
+                    status.innerText = `Creating shortcut...`;
+                    await window.api.createShortcut({ targetId: clipboardItem.id, parentId: destId, name: clipboardItem.name });
+                    status.innerText = "Shortcut created!";
+                    refreshFolder(destId);
+                } else if (clipboardItem.mode === 'move') {
+                    status.innerText = `Moving "${clipboardItem.name}"...`;
+                    try {
+                        const oldParent = clipboardItem.parentId;
+                        await window.api.moveFile({ 
+                            fileId: clipboardItem.id, 
+                            oldParentId: oldParent, 
+                            newParentId: destId 
+                        });
+                        status.innerText = "Move successful!";
+                        refreshFolder(destId); // Dest
+                        if (oldParent !== destId) {
+                            refreshFolder(oldParent); // Source
+                        }
+                        clipboardItem = null; 
+                    } catch (e) {
+                        status.innerText = "Move failed.";
+                        alert("Error moving item.");
+                    }
+                }
             }
         });
     }

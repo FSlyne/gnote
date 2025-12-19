@@ -2,7 +2,16 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" 
+          content="default-src 'self' https://*.google.com https://*.googleapis.com; 
+                   script-src 'self' https://unpkg.com 'unsafe-eval'; 
+                   style-src 'self' 'unsafe-inline'; 
+                   img-src 'self' data: https://*.googleusercontent.com https://*.gstatic.com;">
+    
     <title>Google Drive Explorer</title>
+    
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    
     <style>
         body { margin: 0; padding: 0; height: 100vh; width: 100vw; display: flex; overflow: hidden; font-family: 'Roboto', 'Segoe UI', sans-serif; }
         
@@ -11,6 +20,21 @@
         
         /* Main Viewer: Takes all available space */
         #viewer { flex: 1; display: flex; flex-direction: column; background: white; position: relative; min-width: 0; }
+
+        /* Graph View Overlay (Hidden by default) */
+        #graph-view {
+            display: none;
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #222; 
+            z-index: 20;
+        }
+        #close-graph-btn {
+            position: absolute; top: 20px; right: 20px;
+            padding: 10px 20px; background: white; border: none;
+            cursor: pointer; z-index: 21; font-weight: bold; border-radius: 4px;
+        }
 
         /* Drag Handle: The Vertical Bar */
         #drag-handle {
@@ -46,6 +70,13 @@
         .tree-arrow.rotated { transform: rotate(90deg); }
         .tree-icon { margin-right: 8px; font-size: 16px; }
         button:hover { opacity: 0.9; }
+
+        /* Drag & Drop Visuals */
+        .tree-label.drag-over {
+            background-color: #d2e3fc !important;
+            border: 1px dashed #1967d2;
+            color: #1967d2;
+        }
     </style>
 </head>
 <body>
@@ -85,7 +116,7 @@
   </div>
 
   <div id="viewer">
-    <webview id="doc-view" src="about:blank" allowpopups style="width: 100%; height: 100%;"></webview>
+ <webview id="doc-view" src="about:blank" allowpopups useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" style="width: 100%; height: 100%;"></webview>    
     <div id="dashboard-view" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:white; z-index:10; flex-direction:column;">
         <div style="padding:20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;">
             <h2 style="margin:0; color:#202124;">Master Task Index</h2>
@@ -105,12 +136,16 @@
             </table>
         </div>
     </div>
+
+    <div id="graph-view">
+        <button id="close-graph-btn">Close Graph</button>
+        <div id="network-container" style="width:100%; height:100%;"></div>
+    </div>
   </div>
 
   <div id="drag-handle"></div>
 
   <div id="scanner-pane" style="overflow-y: auto;">
-      
       <div id="local-tags-section" style="padding: 10px; border-bottom:1px solid #eee; display:none;">
           <div style="font-size:10px; font-weight:bold; color:#5f6368; margin-bottom:5px;">IN THIS FILE</div>
           <div id="local-tags-container" style="display:flex; flex-wrap:wrap; gap:4px;"></div>

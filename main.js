@@ -106,19 +106,18 @@ async function getOrCreateSheetId(sheets, spreadsheetId, title) {
 // 3. API HANDLERS
 // ---------------------------------------------------------
 
-// UPDATED: Sync Logic with Smart Merging for Dates
 ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
   if (!authClient) return false;
   const sheets = google.sheets({ version: 'v4', auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
   try {
-    // 1. Get Spreadsheet
     let spreadsheetId;
     const search = await drive.files.list({
       q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
       fields: 'files(id)', pageSize: 1
     });
+
     if (search.data.files.length > 0) {
       spreadsheetId = search.data.files[0].id;
     } else {
@@ -129,7 +128,6 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
     const nowStr = new Date().toLocaleString();
 
     // --- HANDLE TASKS (Smart Merge) ---
-    // Filter input items for tasks
     const currentTasks = items.filter(i => i.type.includes('Task')).map(i => ({
         status: i.type.includes('(Done)') ? 'Closed' : 'Open',
         text: i.text,
@@ -139,27 +137,23 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
     if (currentTasks.length > 0) {
         await getOrCreateSheetId(sheets, spreadsheetId, 'Tasks');
         
-        // Read existing rows to preserve history
         const range = 'Tasks!A:F';
         const readRes = await sheets.spreadsheets.values.get({ spreadsheetId, range });
         const allRows = readRes.data.values || [];
         const header = allRows[0] || ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
         
-        // Filter out OTHER files (keep them safe)
-        // Col Index 2 is File ID in new schema
+        // Filter out OTHER files
         const otherFileRows = allRows.slice(1).filter(row => row[2] !== fileId);
         
-        // Find existing rows for THIS file to merge data
+        // Find existing rows for THIS file
         const myOldRows = allRows.slice(1).filter(row => row[2] === fileId);
-        
-        // Map: "HeaderID|Content" -> { Created, Closed }
         const historyMap = new Map();
         myOldRows.forEach(row => {
             const key = row[3] + '|' + row[5];
             historyMap.set(key, { created: row[0], closed: row[1] });
         });
 
-        // Build NEW rows merging history
+        // Build NEW rows
         const newRows = currentTasks.map(task => {
             const key = task.headerId + '|' + task.text;
             const history = historyMap.get(key);
@@ -167,14 +161,12 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
             let created = history ? history.created : nowStr;
             let closed = history ? history.closed : '';
 
-            // Status Change Logic
             if (task.status === 'Closed' && !closed) closed = nowStr;
-            if (task.status === 'Open') closed = ''; // Re-opened
+            if (task.status === 'Open') closed = '';
 
             return [created, closed, fileId, task.headerId, task.status, task.text];
         });
 
-        // Write EVERYTHING back
         const finalRows = [header, ...otherFileRows, ...newRows];
         await sheets.spreadsheets.values.clear({ spreadsheetId, range });
         await sheets.spreadsheets.values.update({
@@ -182,7 +174,25 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
         });
     }
 
-    // --- HANDLE TAGS (Simple Replace) ---
+
+// TOGGLE STAR STATUS
+ipcMain.handle('drive:toggleStar', async (event, { fileId, addStar }) => {
+  if (!authClient) return false;
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    await drive.files.update({
+      fileId: fileId,
+      resource: { starred: addStar },
+      fields: 'id, starred'
+    });
+    return true;
+  } catch (err) {
+    console.error("Star Error:", err);
+    throw err;
+  }
+});
+
+    // --- HANDLE TAGS ---
     const currentTags = items.filter(i => !i.type.includes('Task'));
     if (currentTags.length > 0) {
         await getOrCreateSheetId(sheets, spreadsheetId, 'Tags');
@@ -191,10 +201,7 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
         const allTagRows = tagRead.data.values || [];
         const tagHeader = allTagRows[0] || ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
         
-        // Keep other files
         const keptTagRows = allTagRows.slice(1).filter(r => r[1] !== fileId);
-        
-        // Add new tags
         const newTagRows = currentTags.map(i => [nowStr, fileId, i.headerId||'', i.type, i.text]);
         
         const finalTagRows = [tagHeader, ...keptTagRows, ...newTagRows];
@@ -211,7 +218,6 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
   }
 });
 
-// UPDATED: Return Data with New Columns
 ipcMain.handle('sheet:getAllItems', async () => {
   if (!authClient) return [];
   const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -226,7 +232,6 @@ ipcMain.handle('sheet:getAllItems', async () => {
     const spreadsheetId = search.data.files[0].id;
     
     // Read Tasks (A:F)
-    // [Created, Closed, File ID, Header ID, Status, Content]
     let res;
     try { res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tasks!A2:F' }); } catch(e) { return []; }
 
@@ -242,6 +247,7 @@ ipcMain.handle('sheet:getAllItems', async () => {
   } catch (err) { return []; }
 });
 
+// ... (Keep existing handlers for Doc Scan, Tags, Drive operations) ...
 ipcMain.handle('sheet:getAllTags', async () => {
   if (!authClient) return {};
   const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -253,17 +259,12 @@ ipcMain.handle('sheet:getAllTags', async () => {
     });
     if (search.data.files.length === 0) return {}; 
     const spreadsheetId = search.data.files[0].id;
-    
-    // Read Tags
     let res;
     try { res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tags!B:E' }); } catch(e) { return {}; } 
-
     const rows = res.data.values || [];
     const tagMap = {}; 
     rows.slice(1).forEach(row => { 
-      const fileId = row[0];
-      const type = row[2];
-      const content = row[3];
+      const fileId = row[0]; const type = row[2]; const content = row[3];
       if (type === 'Tag' && content && fileId) {
         if (!tagMap[content]) tagMap[content] = new Set();
         tagMap[content].add(fileId);
@@ -273,9 +274,6 @@ ipcMain.handle('sheet:getAllTags', async () => {
     return tagMap;
   } catch (err) { return {}; }
 });
-
-
-// ... (Keep existing handlers for Doc Scan, Drive operations, etc.) ...
 ipcMain.handle('doc:scanContent', async (event, fileId) => {
   if (!authClient) return null;
   const docs = google.docs({ version: 'v1', auth: authClient });
@@ -285,9 +283,7 @@ ipcMain.handle('doc:scanContent', async (event, fileId) => {
     let comments = [];
     try {
       const commentRes = await drive.comments.list({
-        fileId: fileId,
-        fields: 'comments(content, author(displayName), quotedFileContent)',
-        pageSize: 100
+        fileId: fileId, fields: 'comments(content, author(displayName), quotedFileContent)', pageSize: 100
       });
       comments = commentRes.data.comments || [];
     } catch (e) { console.warn(e); }
@@ -301,24 +297,44 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   const drive = google.drive({ version: 'v3', auth: authClient });
   try {
     const res = await drive.files.list({
-      q: `'${folderId}' in parents and trashed = false`,
-      pageSize: 100,
+      q: `'${folderId}' in parents and trashed = false`, pageSize: 100,
       fields: 'files(id, name, mimeType, webViewLink, iconLink, parents, shortcutDetails, appProperties)',
-      orderBy: 'folder, name',
-      includeItemsFromAllDrives: true, supportsAllDrives: true,
+      orderBy: 'folder, name', includeItemsFromAllDrives: true, supportsAllDrives: true,
     });
     return res.data.files ?? [];
   } catch (err) { return []; }
 });
+
+// [main.js]
+
+ipcMain.handle('drive:getStarredFiles', async () => {
+  if (!authClient) loadSavedCredentials();
+  if (!authClient) return [];
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    const res = await drive.files.list({
+      // Query for starred items, excluding trash
+      q: "starred = true and trashed = false",
+      pageSize: 50,
+      // Same fields as listFiles so your renderer handles them easily
+      fields: 'files(id, name, mimeType, webViewLink, iconLink, parents, shortcutDetails, appProperties)',
+      orderBy: 'folder, name',
+      includeItemsFromAllDrives: true, 
+      supportsAllDrives: true,
+    });
+    return res.data.files ?? [];
+  } catch (err) { 
+    console.error("Starred Fetch Error:", err);
+    return []; 
+  }
+});
+
 ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
   try {
     const qString = searchContent ? `fullText contains '${query}' and trashed = false` : `name contains '${query}' and trashed = false`;
-    const res = await drive.files.list({
-      q: qString, pageSize: 20,
-      fields: 'files(id, name, mimeType, webViewLink, iconLink, parents, shortcutDetails)',
-    });
+    const res = await drive.files.list({ q: qString, pageSize: 20, fields: 'files(id, name, mimeType, webViewLink, iconLink, parents, shortcutDetails)' });
     return res.data.files ?? [];
   } catch (err) { return []; }
 });
@@ -326,8 +342,7 @@ ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) =
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
   const file = await drive.files.create({
-    resource: { name: name, parents: [parentId], mimeType: mimeType },
-    fields: 'id, name, mimeType, webViewLink, iconLink'
+    resource: { name: name, parents: [parentId], mimeType: mimeType }, fields: 'id, name, mimeType, webViewLink, iconLink'
   });
   return file.data;
 });
@@ -387,11 +402,11 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
 ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
-  const res = await drive.files.create({
+  constQX = await drive.files.create({
     resource: { name: name, parents: [parentId], mimeType: 'application/vnd.google-apps.shortcut', shortcutDetails: { targetId: targetId } },
     fields: 'id, name, mimeType, webViewLink, iconLink'
   });
-  return res.data;
+  return constQX.data;
 });
 ipcMain.handle('drive:openDailyDiary', async () => {
     if (!authClient) return null;
@@ -424,10 +439,82 @@ ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {
   } catch(e) { return []; }
 });
 ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url));
+
+// ---------------------------------------------------------
+// 4. MENUS
+// ---------------------------------------------------------
+
+// Helper to Send Commands to Renderer
+function sendCommand(action, data = {}) {
+    if (win && win.webContents) {
+        win.webContents.send('menu-action', { action, ...data });
+    }
+}
+
+function createApplicationMenu() {
+    const template = [
+        { role: 'fileMenu' }, // Standard Mac/Windows File menu
+        { label: 'Edit', role: 'editMenu' }, // Standard Edit (Copy/Paste)
+        { 
+            label: 'View', 
+            submenu: [
+                { 
+                    label: 'Task Dashboard', 
+                    accelerator: 'CmdOrCtrl+D', 
+                    click: () => sendCommand('toggle-dashboard') 
+                },
+                { 
+                    label: 'Toggle Scanner Pane', 
+                    accelerator: 'CmdOrCtrl+/', 
+                    click: () => sendCommand('toggle-scanner') 
+                },
+                { 
+                    label: 'Show Graph View', 
+                    accelerator: 'CmdOrCtrl+G', 
+                    click: () => sendCommand('show-graph') 
+                },
+                { type: 'separator' },
+                { role: 'reload' },
+                { role: 'forceReload' },
+                { role: 'toggleDevTools' },
+                { type: 'separator' },
+                { role: 'resetZoom' },
+                { role: 'zoomIn' },
+                { role: 'zoomOut' },
+                { type: 'separator' },
+                { role: 'togglefullscreen' }
+            ] 
+        },
+        { 
+            label: 'Go', 
+            submenu: [
+                { 
+                    label: 'Today\'s Diary', 
+                    accelerator: 'CmdOrCtrl+T', 
+                    click: () => sendCommand('open-today') 
+                }
+            ] 
+        },
+        { role: 'windowMenu' },
+        { role: 'help', submenu: [{ label: 'About', click: async () => { /* ... */ } }] }
+    ];
+    const menu = Menu.buildFromTemplate(template);
+    Menu.setApplicationMenu(menu);
+}
+
+// IPC FOR CONTEXT MENUS (Right-click)
 ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, clipboardItem, shortcutDetails }) => {
   const template = [];
-  if (parentId && parentId !== 'root') { template.push({ label: '📂 Open File Location', click: () => shell.openExternal(`https://drive.google.com/drive/folders/${parentId}`) }); template.push({ type: 'separator' }); }
-  if (isFolder) {
+  const isRoot = id === 'root'; // CHECK FOR ROOT
+
+  // 1. OPEN LOCATION (Skip for Root)
+  if (parentId && parentId !== 'root' && !isRoot) {
+      template.push({ label: '📂 Open File Location', click: () => shell.openExternal(`https://drive.google.com/drive/folders/${parentId}`) });
+      template.push({ type: 'separator' });
+  }
+
+  // 2. CREATION ACTIONS (Always allow on Root or Folders)
+  if (isFolder || isRoot) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
       { label: '📝 New Google Doc...', click: () => sendAction(event, 'create', { type: 'doc', parentId: id }) },
@@ -435,27 +522,65 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
       { type: 'separator' }
     );
   }
-  template.push({ label: '✏️ Rename', click: () => sendAction(event, 'rename', { id, name, parentId }) });
-  template.push({ label: 'Edit in App', click: () => sendAction(event, 'edit', { id, name, link, shortcutDetails }) });
-  template.push({ label: '🌐 Open in Browser', click: () => { if (link) shell.openExternal(link); } });
-  template.push({ type: 'separator' });
-  template.push({ label: '✂️ Cut File/Folder', click: () => sendAction(event, 'cut-item', { id, name, parentId }) });
-  template.push({ label: '🔗 Copy Shortcut Ref', click: () => sendAction(event, 'copy-ref', { id, name }) });
-  if (isFolder && clipboardItem) {
+
+  // 3. DESTRUCTIVE ACTIONS (Hide for Root)
+  if (!isRoot) {
+    template.push({ type: 'separator' });
+      
+      // ADD STAR ACTIONS
+      template.push({ 
+          label: '⭐ Add to Starred', 
+          click: () => sendAction(event, 'toggle-star', { id, addStar: true }) 
+      });
+      template.push({ 
+          label: '☆ Remove from Starred', 
+          click: () => sendAction(event, 'toggle-star', { id, addStar: false }) 
+      });
+      template.push({ label: '✏️ Rename', click: () => sendAction(event, 'rename', { id, name, parentId }) });
+      template.push({ label: 'Edit in App', click: () => sendAction(event, 'edit', { id, name, link, shortcutDetails }) });
+      template.push({ label: '🌐 Open in Browser', click: () => { if (link) shell.openExternal(link); } });
+      template.push({ type: 'separator' });
+      
+      template.push({ label: '✂️ Cut File/Folder', click: () => sendAction(event, 'cut-item', { id, name, parentId }) });
+      template.push({ label: '🔗 Copy Shortcut Ref', click: () => sendAction(event, 'copy-ref', { id, name }) });
+  }
+
+  // 4. PASTE (Allow on Root)
+  if ((isFolder || isRoot) && clipboardItem) {
       let pasteLabel = '';
       if (clipboardItem.mode === 'move') pasteLabel = `📋 Paste "${clipboardItem.name}" (Move Here)`;
       else if (clipboardItem.mode === 'shortcut') pasteLabel = `🔗 Paste Shortcut to "${clipboardItem.name}"`;
-      if (pasteLabel) { template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) }); }
+      
+      if (pasteLabel) {
+        template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) });
+      }
   }
-  template.push({ type: 'separator' });
-  template.push({ label: 'ℹ️ View Details & Versions', click: () => sendAction(event, 'details', { id, name }) });
+
+  if (!isRoot) {
+      template.push({ type: 'separator' });
+      template.push({ label: 'ℹ️ View Details & Versions', click: () => sendAction(event, 'details', { id, name }) });
+  }
+
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
+
 function sendAction(event, action, data) { event.sender.send('menu-action', { action, data }); }
-ipcMain.on('show-header-menu', (event, { url }) => { Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) }); });
+ipcMain.on('show-header-menu', (event, { url }) => {
+  Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
+ipcMain.on('show-header-menu', (event, { url }) => {
+  Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
+// 5. WINDOW CREATION
 async function createWindow() {
   loadSavedCredentials();
-  win = new BrowserWindow({ width: 1200, height: 800, show: false, webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true } });
+  createApplicationMenu(); // <--- CREATE MENU HERE
+  win = new BrowserWindow({
+    width: 1200, height: 800, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true }
+  });
   win.loadFile('index.html');
   win.once('ready-to-show', () => win.show());
 }

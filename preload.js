@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('api', {
   // DRIVE FILES
   listFiles: (folderId) => ipcRenderer.invoke('drive:listFiles', folderId),
   searchFiles: (query, searchContent) => ipcRenderer.invoke('drive:searchFiles', { query, searchContent }),
+  getStarredFiles: () => ipcRenderer.invoke('drive:getStarredFiles'),
+  toggleStar: (data) => ipcRenderer.invoke('drive:toggleStar', data),
   createFile: (data) => ipcRenderer.invoke('drive:createFile', data),
   moveFile: (data) => ipcRenderer.invoke('drive:moveFile', data),
   renameFile: (data) => ipcRenderer.invoke('drive:renameFile', data), // NEW

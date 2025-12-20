@@ -61,25 +61,240 @@ async function startAuthentication() {
 }
 
 // ---------------------------------------------------------
-// 2. API HANDLERS
+// 2. HELPER FUNCTIONS (Sheets)
 // ---------------------------------------------------------
 
-ipcMain.handle('doc:scanContent', async (event, fileId) => {
-  if (!authClient) return null;
-  const docs = google.docs({ version: 'v1', auth: authClient });
+async function getOrCreateSheetId(sheets, spreadsheetId, title) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheet = meta.data.sheets.find(s => s.properties.title === title);
+  
+  if (sheet) {
+    return sheet.properties.sheetId;
+  } else {
+    // NEW SCHEMA for Tasks: Created, Closed, FileID, HeaderID, Status, Content
+    let headers = ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
+    if (title === 'Tasks') {
+        headers = ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
+    }
+
+    const addRes = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: { requests: [{ addSheet: { properties: { title } } }] }
+    });
+    const newSheetId = addRes.data.replies[0].addSheet.properties.sheetId;
+    
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${title}!A1`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [headers] }
+    });
+    
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: { requests: [{ updateSheetProperties: {
+        properties: { sheetId: newSheetId, gridProperties: { frozenRowCount: 1 } },
+        fields: 'gridProperties.frozenRowCount'
+      }}] }
+    });
+
+    return newSheetId;
+  }
+}
+
+// ---------------------------------------------------------
+// 3. API HANDLERS
+// ---------------------------------------------------------
+
+// UPDATED: Sync Logic with Smart Merging for Dates
+ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
+  if (!authClient) return false;
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
   try {
-    const res = await docs.documents.get({ documentId: fileId });
-    return { title: res.data.title, content: res.data.body.content };
+    // 1. Get Spreadsheet
+    let spreadsheetId;
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+    if (search.data.files.length > 0) {
+      spreadsheetId = search.data.files[0].id;
+    } else {
+      const newSheet = await sheets.spreadsheets.create({ resource: { properties: { title: 'Master Index' } } });
+      spreadsheetId = newSheet.data.spreadsheetId;
+    }
+
+    const nowStr = new Date().toLocaleString();
+
+    // --- HANDLE TASKS (Smart Merge) ---
+    // Filter input items for tasks
+    const currentTasks = items.filter(i => i.type.includes('Task')).map(i => ({
+        status: i.type.includes('(Done)') ? 'Closed' : 'Open',
+        text: i.text,
+        headerId: i.headerId || ''
+    }));
+
+    if (currentTasks.length > 0) {
+        await getOrCreateSheetId(sheets, spreadsheetId, 'Tasks');
+        
+        // Read existing rows to preserve history
+        const range = 'Tasks!A:F';
+        const readRes = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+        const allRows = readRes.data.values || [];
+        const header = allRows[0] || ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
+        
+        // Filter out OTHER files (keep them safe)
+        // Col Index 2 is File ID in new schema
+        const otherFileRows = allRows.slice(1).filter(row => row[2] !== fileId);
+        
+        // Find existing rows for THIS file to merge data
+        const myOldRows = allRows.slice(1).filter(row => row[2] === fileId);
+        
+        // Map: "HeaderID|Content" -> { Created, Closed }
+        const historyMap = new Map();
+        myOldRows.forEach(row => {
+            const key = row[3] + '|' + row[5];
+            historyMap.set(key, { created: row[0], closed: row[1] });
+        });
+
+        // Build NEW rows merging history
+        const newRows = currentTasks.map(task => {
+            const key = task.headerId + '|' + task.text;
+            const history = historyMap.get(key);
+            
+            let created = history ? history.created : nowStr;
+            let closed = history ? history.closed : '';
+
+            // Status Change Logic
+            if (task.status === 'Closed' && !closed) closed = nowStr;
+            if (task.status === 'Open') closed = ''; // Re-opened
+
+            return [created, closed, fileId, task.headerId, task.status, task.text];
+        });
+
+        // Write EVERYTHING back
+        const finalRows = [header, ...otherFileRows, ...newRows];
+        await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+        await sheets.spreadsheets.values.update({
+            spreadsheetId, range: 'Tasks!A1', valueInputOption: 'USER_ENTERED', resource: { values: finalRows }
+        });
+    }
+
+    // --- HANDLE TAGS (Simple Replace) ---
+    const currentTags = items.filter(i => !i.type.includes('Task'));
+    if (currentTags.length > 0) {
+        await getOrCreateSheetId(sheets, spreadsheetId, 'Tags');
+        const tagRange = 'Tags!A:E';
+        const tagRead = await sheets.spreadsheets.values.get({ spreadsheetId, range: tagRange });
+        const allTagRows = tagRead.data.values || [];
+        const tagHeader = allTagRows[0] || ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
+        
+        // Keep other files
+        const keptTagRows = allTagRows.slice(1).filter(r => r[1] !== fileId);
+        
+        // Add new tags
+        const newTagRows = currentTags.map(i => [nowStr, fileId, i.headerId||'', i.type, i.text]);
+        
+        const finalTagRows = [tagHeader, ...keptTagRows, ...newTagRows];
+        await sheets.spreadsheets.values.clear({ spreadsheetId, range: tagRange });
+        await sheets.spreadsheets.values.update({
+            spreadsheetId, range: 'Tags!A1', valueInputOption: 'USER_ENTERED', resource: { values: finalTagRows }
+        });
+    }
+
+    return true;
   } catch (err) {
-    console.error("Doc Scan Error:", err);
-    return null;
+    console.error("Sync Error Details:", err);
+    throw err;
   }
 });
 
-ipcMain.handle('auth:openWebLogin', async () => {
-  try { await startAuthentication(); return true; } catch (e) { return false; }
+// UPDATED: Return Data with New Columns
+ipcMain.handle('sheet:getAllItems', async () => {
+  if (!authClient) return [];
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+    if (search.data.files.length === 0) return [];
+    
+    const spreadsheetId = search.data.files[0].id;
+    
+    // Read Tasks (A:F)
+    // [Created, Closed, File ID, Header ID, Status, Content]
+    let res;
+    try { res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tasks!A2:F' }); } catch(e) { return []; }
+
+    const rows = res.data.values || [];
+    return rows.map(row => ({
+        created: row[0],
+        closed: row[1],
+        fileId: row[2],
+        headerId: row[3],
+        status: row[4] || 'Open',
+        content: row[5]
+    })).filter(item => item.content); 
+  } catch (err) { return []; }
 });
 
+ipcMain.handle('sheet:getAllTags', async () => {
+  if (!authClient) return {};
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    const search = await drive.files.list({
+      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
+      fields: 'files(id)', pageSize: 1
+    });
+    if (search.data.files.length === 0) return {}; 
+    const spreadsheetId = search.data.files[0].id;
+    
+    // Read Tags
+    let res;
+    try { res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tags!B:E' }); } catch(e) { return {}; } 
+
+    const rows = res.data.values || [];
+    const tagMap = {}; 
+    rows.slice(1).forEach(row => { 
+      const fileId = row[0];
+      const type = row[2];
+      const content = row[3];
+      if (type === 'Tag' && content && fileId) {
+        if (!tagMap[content]) tagMap[content] = new Set();
+        tagMap[content].add(fileId);
+      }
+    });
+    for (const tag in tagMap) { tagMap[tag] = Array.from(tagMap[tag]); }
+    return tagMap;
+  } catch (err) { return {}; }
+});
+
+
+// ... (Keep existing handlers for Doc Scan, Drive operations, etc.) ...
+ipcMain.handle('doc:scanContent', async (event, fileId) => {
+  if (!authClient) return null;
+  const docs = google.docs({ version: 'v1', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    const docRes = await docs.documents.get({ documentId: fileId });
+    let comments = [];
+    try {
+      const commentRes = await drive.comments.list({
+        fileId: fileId,
+        fields: 'comments(content, author(displayName), quotedFileContent)',
+        pageSize: 100
+      });
+      comments = commentRes.data.comments || [];
+    } catch (e) { console.warn(e); }
+    return { title: docRes.data.title, doc: docRes.data, comments: comments };
+  } catch (err) { return null; }
+});
+ipcMain.handle('auth:openWebLogin', async () => { try { await startAuthentication(); return true; } catch (e) { return false; } });
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) loadSavedCredentials();
   if (!authClient) return [];
@@ -95,7 +310,6 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
     return res.data.files ?? [];
   } catch (err) { return []; }
 });
-
 ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -108,7 +322,6 @@ ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
     return res.data.files ?? [];
   } catch (err) { return []; }
 });
-
 ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -118,76 +331,39 @@ ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) =
   });
   return file.data;
 });
-
-// RENAME FILE HANDLER
 ipcMain.handle('drive:renameFile', async (event, { fileId, newName }) => {
   if (!authClient) return false;
   const drive = google.drive({ version: 'v3', auth: authClient });
-  try {
-    await drive.files.update({
-        fileId: fileId,
-        resource: { name: newName },
-        fields: 'id, name'
-    });
-    return true;
-  } catch (e) {
-      console.error("Rename Error", e);
-      throw e;
-  }
+  try { await drive.files.update({ fileId: fileId, resource: { name: newName }, fields: 'id, name' }); return true; } catch (e) { throw e; }
 });
-
-// P. Create Section Link (Pseudo-File)
 ipcMain.handle('drive:createSectionLink', async (event, { parentId, name, sourceFileId, headerId }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
   try {
       const file = await drive.files.create({
-        resource: { 
-            name: name,
-            parents: [parentId], 
-            mimeType: 'application/vnd.google-apps.drive-sdk',
-            appProperties: {
-                role: 'section_link',
-                sourceFileId: sourceFileId,
-                headerId: headerId
-            },
+        resource: { name: name, parents: [parentId], mimeType: 'application/vnd.google-apps.drive-sdk',
+            appProperties: { role: 'section_link', sourceFileId: sourceFileId, headerId: headerId },
             description: `Jump link to section in file ID: ${sourceFileId}`
-        },
-        fields: 'id, name, mimeType, webViewLink, iconLink, appProperties'
+        }, fields: 'id, name, mimeType, webViewLink, iconLink, appProperties'
       });
       return file.data;
-  } catch(e) {
-      console.error("Section Link Error", e);
-      throw e;
-  }
+  } catch(e) { throw e; }
 });
-
-// MOVE FILE (Cut/Paste)
 ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentId }) => {
   if (!authClient) return false;
   const drive = google.drive({ version: 'v3', auth: authClient });
-  await drive.files.update({ 
-      fileId: fileId, 
-      addParents: newParentId, 
-      removeParents: oldParentId,
-      fields: 'id, parents' 
-  });
+  await drive.files.update({ fileId: fileId, addParents: newParentId, removeParents: oldParentId, fields: 'id, parents' });
   return true;
 });
-
 ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
-  const fileReq = drive.files.get({
-    fileId: fileId,
-    fields: 'id, name, mimeType, webViewLink, size, createdTime, modifiedTime, owners(displayName, emailAddress), parents'
-  });
+  const fileReq = drive.files.get({ fileId: fileId, fields: 'id, name, mimeType, webViewLink, size, createdTime, modifiedTime, owners(displayName, emailAddress), parents' });
   let revisions = [];
   try {
     const revRes = await drive.revisions.list({ fileId: fileId, pageSize: 10, fields: 'revisions(id, modifiedTime, lastModifyingUser(displayName))' });
     revisions = revRes.data.revisions || [];
   } catch (e) {}
-
   const meta = (await fileReq).data;
   let pathString = 'Unknown';
   if (meta.parents && meta.parents.length > 0) {
@@ -208,7 +384,6 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   meta.fullPath = pathString;
   return { metadata: meta, revisions: revisions.reverse() };
 });
-
 ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -218,155 +393,40 @@ ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name 
   });
   return res.data;
 });
-
 ipcMain.handle('drive:openDailyDiary', async () => {
     if (!authClient) return null;
     const drive = google.drive({ version: 'v3', auth: authClient });
     try {
       const today = new Date().toLocaleDateString('en-CA'); 
       let dailyFolderId;
-      const folderRes = await drive.files.list({
-        q: "mimeType='application/vnd.google-apps.folder' and name='Daily' and 'root' in parents and trashed=false",
-        fields: 'files(id)', pageSize: 1
-      });
-      if (folderRes.data.files.length > 0) {
-        dailyFolderId = folderRes.data.files[0].id;
-      } else {
-        const newFolder = await drive.files.create({
-          resource: { name: 'Daily', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] }, fields: 'id'
-        });
+      const folderRes = await drive.files.list({ q: "mimeType='application/vnd.google-apps.folder' and name='Daily' and 'root' in parents and trashed=false", fields: 'files(id)', pageSize: 1 });
+      if (folderRes.data.files.length > 0) { dailyFolderId = folderRes.data.files[0].id; } else {
+        const newFolder = await drive.files.create({ resource: { name: 'Daily', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] }, fields: 'id' });
         dailyFolderId = newFolder.data.id;
       }
       let fileToOpen;
-      const fileRes = await drive.files.list({
-        q: `name='${today}' and '${dailyFolderId}' in parents and trashed=false`,
-        fields: 'files(id, name, mimeType, webViewLink, shortcutDetails)', pageSize: 1
-      });
-      if (fileRes.data.files.length > 0) {
-        fileToOpen = fileRes.data.files[0];
-      } else {
-        const newFile = await drive.files.create({
-          resource: { name: today, mimeType: 'application/vnd.google-apps.document', parents: [dailyFolderId] },
-          fields: 'id, name, mimeType, webViewLink, shortcutDetails'
-        });
+      const fileRes = await drive.files.list({ q: `name='${today}' and '${dailyFolderId}' in parents and trashed=false`, fields: 'files(id, name, mimeType, webViewLink, shortcutDetails)', pageSize: 1 });
+      if (fileRes.data.files.length > 0) { fileToOpen = fileRes.data.files[0]; } else {
+        const newFile = await drive.files.create({ resource: { name: today, mimeType: 'application/vnd.google-apps.document', parents: [dailyFolderId] }, fields: 'id, name, mimeType, webViewLink, shortcutDetails' });
         fileToOpen = newFile.data;
       }
       return fileToOpen;
-    } catch (err) {
-      console.error("Daily Diary Error:", err);
-      throw err;
-    }
-  });
-
-ipcMain.handle('sheet:getAllTags', async () => {
-  if (!authClient) return {};
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  try {
-    const search = await drive.files.list({
-      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
-      fields: 'files(id)', pageSize: 1
-    });
-    if (search.data.files.length === 0) return {}; 
-    const spreadsheetId = search.data.files[0].id;
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Sheet1!B:E' });
-    const rows = res.data.values || [];
-    const tagMap = {}; 
-    rows.slice(1).forEach(row => {
-      const fileId = row[0];
-      const type = row[2];
-      const content = row[3];
-      if (type === 'Tag' && content && fileId) {
-        if (!tagMap[content]) tagMap[content] = new Set();
-        tagMap[content].add(fileId);
-      }
-    });
-    for (const tag in tagMap) { tagMap[tag] = Array.from(tagMap[tag]); }
-    return tagMap;
-  } catch (err) { return {}; }
+    } catch (err) { throw err; }
 });
-
 ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {
   if (!authClient || !fileIds || fileIds.length === 0) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
   const targetIds = [...new Set(fileIds)].slice(0, 20); 
   try {
-    const promises = targetIds.map(id => 
-       drive.files.get({ fileId: id, fields: 'id, name, mimeType, webViewLink, iconLink, shortcutDetails' })
-       .then(res => res.data).catch(err => null)
-    );
+    const promises = targetIds.map(id => drive.files.get({ fileId: id, fields: 'id, name, mimeType, webViewLink, iconLink, shortcutDetails' }).then(res => res.data).catch(err => null));
     const results = await Promise.all(promises);
     return results.filter(f => f !== null);
   } catch(e) { return []; }
 });
-
-ipcMain.handle('sheet:getAllItems', async () => {
-  if (!authClient) return [];
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  try {
-    const search = await drive.files.list({
-      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
-      fields: 'files(id)', pageSize: 1
-    });
-    if (search.data.files.length === 0) return [];
-    const spreadsheetId = search.data.files[0].id;
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Sheet1!A2:E' });
-    const rows = res.data.values || [];
-    return rows.map(row => ({
-        date: row[0], fileId: row[1], headerId: row[2], type: row[3], content: row[4]
-    })).filter(item => item.content); 
-  } catch (err) { return []; }
-});
-
-ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
-  if (!authClient) return false;
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const drive = google.drive({ version: 'v3', auth: authClient });
-
-  try {
-    let spreadsheetId;
-    const search = await drive.files.list({
-      q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
-      fields: 'files(id)', pageSize: 1
-    });
-
-    if (search.data.files.length > 0) {
-      spreadsheetId = search.data.files[0].id;
-    } else {
-      const newSheet = await sheets.spreadsheets.create({ resource: { properties: { title: 'Master Index' } } });
-      spreadsheetId = newSheet.data.spreadsheetId;
-      await sheets.spreadsheets.values.append({
-        spreadsheetId, range: 'Sheet1!A1', valueInputOption: 'USER_ENTERED',
-        resource: { values: [['Date Synced', 'File ID', 'Header ID', 'Type', 'Content']] }
-      });
-    }
-
-    const timestamp = new Date().toLocaleString();
-    const rows = items.map(item => [timestamp, fileId, item.headerId, item.type, item.text]);
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId, range: 'Sheet1!A1', valueInputOption: 'USER_ENTERED', resource: { values: rows }
-    });
-
-    return true;
-  } catch (err) {
-    console.error("Sync Error Details:", err);
-    throw err;
-  }
-});
-
 ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url));
-
-// ---------------------------------------------------------
-// 3. MENUS (Updated with Rename)
-// ---------------------------------------------------------
 ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, clipboardItem, shortcutDetails }) => {
   const template = [];
-  if (parentId && parentId !== 'root') {
-      template.push({ label: '📂 Open File Location', click: () => shell.openExternal(`https://drive.google.com/drive/folders/${parentId}`) });
-      template.push({ type: 'separator' });
-  }
+  if (parentId && parentId !== 'root') { template.push({ label: '📂 Open File Location', click: () => shell.openExternal(`https://drive.google.com/drive/folders/${parentId}`) }); template.push({ type: 'separator' }); }
   if (isFolder) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
@@ -375,47 +435,27 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
       { type: 'separator' }
     );
   }
-  // RENAME (NEW)
   template.push({ label: '✏️ Rename', click: () => sendAction(event, 'rename', { id, name, parentId }) });
-  
   template.push({ label: 'Edit in App', click: () => sendAction(event, 'edit', { id, name, link, shortcutDetails }) });
   template.push({ label: '🌐 Open in Browser', click: () => { if (link) shell.openExternal(link); } });
   template.push({ type: 'separator' });
-  
-  // CUT / PASTE SHORTCUT LOGIC
   template.push({ label: '✂️ Cut File/Folder', click: () => sendAction(event, 'cut-item', { id, name, parentId }) });
   template.push({ label: '🔗 Copy Shortcut Ref', click: () => sendAction(event, 'copy-ref', { id, name }) });
-  
   if (isFolder && clipboardItem) {
       let pasteLabel = '';
       if (clipboardItem.mode === 'move') pasteLabel = `📋 Paste "${clipboardItem.name}" (Move Here)`;
       else if (clipboardItem.mode === 'shortcut') pasteLabel = `🔗 Paste Shortcut to "${clipboardItem.name}"`;
-      
-      if (pasteLabel) {
-        template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) });
-      }
+      if (pasteLabel) { template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) }); }
   }
-
   template.push({ type: 'separator' });
   template.push({ label: 'ℹ️ View Details & Versions', click: () => sendAction(event, 'details', { id, name }) });
-
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
-
 function sendAction(event, action, data) { event.sender.send('menu-action', { action, data }); }
-ipcMain.on('show-header-menu', (event, { url }) => {
-  Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) });
-});
-
-// ---------------------------------------------------------
-// 4. WINDOW
-// ---------------------------------------------------------
+ipcMain.on('show-header-menu', (event, { url }) => { Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) }); });
 async function createWindow() {
   loadSavedCredentials();
-  win = new BrowserWindow({
-    width: 1200, height: 800, show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true }
-  });
+  win = new BrowserWindow({ width: 1200, height: 800, show: false, webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true } });
   win.loadFile('index.html');
   win.once('ready-to-show', () => win.show());
 }

@@ -255,6 +255,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 6. SCANNER LOGIC (With Header Dragging for Links)
     // =========================================================================
 
+// [renderer.js] - Replace 'performScan' and 'renderScanResults'
+
     async function performScan(fileId, mimeType) {
         if (!docStructure) return;
         
@@ -267,117 +269,202 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        docStructure.innerHTML = '<div style="padding:15px; color:#666; font-size:12px;">Scanning structure...</div>';
+        docStructure.innerHTML = '<div style="padding:15px; color:#666; font-size:12px;">Scanning full structure...</div>';
 
         try {
-            const doc = await window.api.scanContent(fileId);
-            if (!doc || !doc.content) {
+            const result = await window.api.scanContent(fileId);
+            if (!result || !result.doc) {
                 docStructure.innerHTML = '<div style="padding:15px; color:#ccc; font-size:12px;">Could not read content.</div>';
                 return;
             }
-            renderScanResults(doc.content, fileId);
+            renderScanResults(result, fileId);
         } catch (e) {
             console.error(e);
             docStructure.innerHTML = '<div style="padding:15px; color:red; font-size:12px;">Scan failed.</div>';
         }
     }
 
-    function renderScanResults(content, fileId) {
+    function renderScanResults(scanData, fileId) {
+        const { doc, comments } = scanData;
         docStructure.innerHTML = '';
         currentScanItems = [];
         
-        let currentSection = { title: 'Top', id: '' };
         let itemsFound = 0;
         const uniqueLocalTags = new Set();
+        let currentSection = { title: 'Top', id: '' };
 
-        content.forEach(element => {
-            if (element.paragraph) {
-                const style = element.paragraph.paragraphStyle?.namedStyleType;
-                const textElements = element.paragraph.elements;
-                let fullText = textElements.map(e => e.textRun?.content).join('').trim();
-                
-                if (!fullText) return;
+        // Helper: Check if a paragraph is a native Google Docs Checklist
+        function isNativeCheckbox(paragraph) {
+            if (!paragraph.bullet || !doc.lists) return false;
+            const listId = paragraph.bullet.listId;
+            const level = paragraph.bullet.nestingLevel || 0;
+            const list = doc.lists[listId];
+            
+            if (!list) return false;
+            
+            // Check glyph type. 'BULLET_CHECKBOX' is definitive.
+            // 'GLYPH_TYPE_UNSPECIFIED' is also common for checklists created via UI.
+            const glyph = list.listProperties?.nestingLevels?.[level]?.glyphType;
+            return glyph === 'BULLET_CHECKBOX' || glyph === 'GLYPH_TYPE_UNSPECIFIED';
+        }
 
-                // HEADING
-                if (style && style.includes('HEADING')) {
-                    itemsFound++;
-                    
-                    const thisHeaderId = element.paragraph.paragraphStyle.headingId || '';
-                    const thisHeaderTitle = fullText;
-
-                    currentSection = { title: thisHeaderTitle, id: thisHeaderId };
-                    
-                    const headEl = document.createElement('div');
-
-                    // --- DRAG LOGIC (Create Link) ---
-                    headEl.draggable = true;
-                    headEl.addEventListener('dragstart', (e) => {
-                        e.dataTransfer.setData('application/json', JSON.stringify({
-                            type: 'section',
-                            sourceFileId: fileId,
-                            headerId: thisHeaderId,   
-                            title: thisHeaderTitle    
-                        }));
-                        e.dataTransfer.effectAllowed = 'all'; 
-                        headEl.style.opacity = '0.5';
-                    });
-                    headEl.addEventListener('dragend', () => headEl.style.opacity = '1');
-                    // -----------------------
-
-                    headEl.style.cssText = "padding: 8px 15px; background: #e8f0fe; font-weight:bold; font-size:12px; color:#1967d2; border-top:1px solid #eee; margin-top:5px; cursor:pointer;";
-                    headEl.innerText = fullText;
-                    if(thisHeaderId) {
-                         headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${thisHeaderId}`;
-                    }
-                    docStructure.appendChild(headEl);
-                } 
-                // TASK
-                else if (fullText.startsWith('[]') || fullText.startsWith('[ ]') || fullText.toLowerCase().startsWith('todo:')) {
-                    itemsFound++;
-                    let cleanText = fullText.replace(/^\[\s*\]/, '').replace(/^todo:/i, '').trim();
-                    currentScanItems.push({ type: 'Task', text: cleanText, headerId: currentSection.id });
-
-                    const taskEl = document.createElement('div');
-                    taskEl.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; display:flex; align-items:start;";
-                    taskEl.innerHTML = `<span style="margin-right:6px; color:#ea4335;">☐</span> <span>${cleanText}</span>`;
-                    docStructure.appendChild(taskEl);
-                }
-                // TAG
-                else if (fullText.includes('#')) {
-                    const matches = fullText.match(/(#[a-zA-Z0-9-_]+)/g);
-                    if (matches) {
-                        itemsFound++;
-                        const tagRow = document.createElement('div');
-                        tagRow.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0;";
-                        matches.forEach(tag => {
-                            uniqueLocalTags.add(tag);
-                            currentScanItems.push({ type: 'Tag', text: tag, headerId: currentSection.id });
-                            const badge = document.createElement('span');
-                            badge.innerText = tag;
-                            badge.style.cssText = "background:#34a853; color:white; padding:2px 6px; border-radius:10px; font-size:10px; margin-right:4px;";
-                            tagRow.appendChild(badge);
+        // Recursive scanner for tables/footnotes/body
+        function scanContentList(contentList) {
+            if (!contentList) return;
+            
+            contentList.forEach(element => {
+                // 1. RECURSE INTO TABLES
+                if (element.table) {
+                    element.table.tableRows.forEach(row => {
+                        row.tableCells.forEach(cell => {
+                            scanContentList(cell.content);
                         });
-                        docStructure.appendChild(tagRow);
-                    }
+                    });
                 }
-                // KEY-VALUE
-                else if (fullText.includes('::')) {
-                    const parts = fullText.split('::');
-                    if (parts.length === 2) {
-                        itemsFound++;
-                        const key = parts[0].trim();
-                        const val = parts[1].trim();
-                        currentScanItems.push({ type: 'Meta', text: `${key}: ${val}`, headerId: currentSection.id });
-                        const kvRow = document.createElement('div');
-                        kvRow.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; color:#444;";
-                        kvRow.innerHTML = `<strong>${key}:</strong> ${val}`;
-                        docStructure.appendChild(kvRow);
-                    }
+                // 2. PROCESS PARAGRAPHS
+                else if (element.paragraph) {
+                    processParagraph(element.paragraph);
+                }
+            });
+        }
+
+function processParagraph(paragraph) {
+            const style = paragraph.paragraphStyle?.namedStyleType;
+            const textElements = paragraph.elements;
+            
+            // Reconstruct text
+            let fullText = '';
+            let isVisuallyStruck = false; 
+
+            textElements.forEach(e => {
+                if(e.textRun) {
+                    fullText += e.textRun.content;
+                    // Check if user manually applied strikethrough (API reliable)
+                    if(e.textRun.textStyle?.strikethrough) isVisuallyStruck = true;
+                }
+            });
+            fullText = fullText.trim();
+            if (!fullText) return;
+
+            // --- DETECT PATTERNS ---
+            // 1. [x] or [X] -> Done
+            const textCheckedMatch = fullText.match(/^\[\s*[xX]\s*\]/); 
+            // 2. [] or [ ] -> Open
+            const textUncheckedMatch = fullText.match(/^\[\s*\]/);
+            // 3. todo: -> Open
+            const todoMatch = fullText.match(/^todo:/i);
+            // 4. Native Smart Checkbox (Status is usually hidden from API)
+            const isNative = isNativeCheckbox(paragraph);
+
+            // -- A. HEADING --
+            if (style && style.includes('HEADING')) {
+                // ... (Keep existing Heading logic) ...
+                itemsFound++;
+                const thisHeaderId = paragraph.paragraphStyle.headingId || '';
+                currentSection = { title: fullText, id: thisHeaderId };
+                
+                const headEl = document.createElement('div');
+                headEl.draggable = true;
+                headEl.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.setData('application/json', JSON.stringify({
+                        type: 'section', sourceFileId: fileId, headerId: thisHeaderId, title: fullText    
+                    }));
+                    e.dataTransfer.effectAllowed = 'all'; 
+                    headEl.style.opacity = '0.5';
+                });
+                headEl.addEventListener('dragend', () => headEl.style.opacity = '1');
+                headEl.style.cssText = "padding: 8px 15px; background: #e8f0fe; font-weight:bold; font-size:12px; color:#1967d2; border-top:1px solid #eee; margin-top:5px; cursor:pointer;";
+                headEl.innerText = fullText;
+                if(thisHeaderId) headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${thisHeaderId}`;
+                docStructure.appendChild(headEl);
+            } 
+            
+            // -- B. TASKS --
+            else if (isNative || textCheckedMatch || textUncheckedMatch || todoMatch) {
+                itemsFound++;
+                
+                // CLEAN THE TEXT
+                let cleanText = fullText
+                    .replace(/^\[\s*[xX]\s*\]/, '') // Remove [x]
+                    .replace(/^\[\s*\]/, '')       // Remove []
+                    .replace(/^todo:/i, '')        // Remove todo:
+                    .trim();
+
+                // DETERMINE STATUS
+                // Trust [x] or manual strikethrough. Native checkboxes unfortunately default to false due to API limits.
+                const isDone = textCheckedMatch || isVisuallyStruck;
+                
+                const statusIcon = isDone ? 'VX' : '☐'; 
+                const statusColor = isDone ? '#34a853' : '#ea4335';
+                const textStyle = isDone ? 'text-decoration: line-through; color: #888;' : '';
+
+                currentScanItems.push({ type: isDone ? 'Task (Done)' : 'Task', text: cleanText, headerId: currentSection.id });
+
+                const taskEl = document.createElement('div');
+                taskEl.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; display:flex; align-items:start;";
+                
+                // Add a small hint for native checkboxes that they might be "lying"
+                let titleHint = isNative ? 'Note: Native checkbox status is not visible to the API' : '';
+
+                taskEl.innerHTML = `<span title="${titleHint}" style="margin-right:6px; color:${statusColor}; font-weight:bold; cursor:help;">${statusIcon}</span> <span style="${textStyle}">${cleanText}</span>`;
+                docStructure.appendChild(taskEl);
+            }
+            
+            // -- C. TAGS --
+            else if (fullText.includes('#')) {
+                // ... (Keep existing Tag logic) ...
+                 const matches = fullText.match(/(#[a-zA-Z0-9-_]+)/g);
+                if (matches) {
+                    itemsFound++;
+                    const tagRow = document.createElement('div');
+                    tagRow.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0;";
+                    matches.forEach(tag => {
+                        uniqueLocalTags.add(tag);
+                        currentScanItems.push({ type: 'Tag', text: tag, headerId: currentSection.id });
+                        const badge = document.createElement('span');
+                        badge.innerText = tag;
+                        badge.style.cssText = "background:#34a853; color:white; padding:2px 6px; border-radius:10px; font-size:10px; margin-right:4px;";
+                        tagRow.appendChild(badge);
+                    });
+                    docStructure.appendChild(tagRow);
                 }
             }
-        });
+        }
 
-        // Show Local Unique Tags
+        // --- EXECUTE SCANS ---
+        if (doc.body && doc.body.content) scanContentList(doc.body.content);
+
+        // Headers/Footers/Footnotes
+        if (doc.headers) Object.values(doc.headers).forEach(h => scanContentList(h.content));
+        if (doc.footers) Object.values(doc.footers).forEach(f => scanContentList(f.content));
+        if (doc.footnotes) Object.values(doc.footnotes).forEach(fn => scanContentList(fn.content));
+
+        // Comments
+        if (comments && comments.length > 0) {
+            currentSection = { title: 'Comments', id: '' };
+            const sep = document.createElement('div');
+            sep.innerHTML = '<strong>💬 Comments</strong>';
+            sep.style.cssText = "padding:8px 15px; background:#f1f3f4; font-size:11px; color:#5f6368; border-top:1px solid #ddd;";
+            docStructure.appendChild(sep);
+
+            comments.forEach(c => {
+                 let text = c.content.trim();
+                 if (!text) return;
+                 
+                 // Look for "TODO:" in comments
+                 if (text.toLowerCase().includes('todo:')) {
+                     itemsFound++;
+                     const clean = text.replace(/todo:/i, '').trim();
+                     currentScanItems.push({ type: 'Task', text: `${clean} (Comment by ${c.author.displayName})`, headerId: '' });
+                     const el = document.createElement('div');
+                     el.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; color:#ea4335;";
+                     el.innerHTML = `☐ ${clean} <em style="color:#999; font-size:10px;">- ${c.author.displayName}</em>`;
+                     docStructure.appendChild(el);
+                 }
+            });
+        }
+
+        // --- FINAL UI UPDATES ---
         if (uniqueLocalTags.size > 0) {
             localTagsSection.style.display = 'block';
             uniqueLocalTags.forEach(tag => {
@@ -389,7 +476,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         
-        // Add Manual Sync Button
         if (!document.getElementById('manual-sync-btn') && itemsFound > 0) {
             const btn = document.createElement('button');
             btn.id = 'manual-sync-btn';
@@ -425,41 +511,133 @@ document.addEventListener('DOMContentLoaded', () => {
     // =========================================================================
 
     // DASHBOARD
+// DASHBOARD
+// [renderer.js] - Replace the dashboardBtn logic (Section 7)
+
+    // DASHBOARD
     if (dashboardBtn) {
         dashboardBtn.onclick = async () => {
             dashboardView.style.display = 'flex';
-            dashboardTable.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center;">Loading tasks...</td></tr>';
+            dashboardTable.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center;">Loading tasks...</td></tr>';
             
-            const items = await window.api.getAllItems();
-            if (items.length === 0) {
-                dashboardTable.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#999;">No tasks found.</td></tr>';
-                return;
+            // 1. Fetch Data
+            const allItems = await window.api.getAllItems();
+            
+            // 2. Setup Filters UI (Only if not already present)
+            let filterContainer = document.getElementById('dash-filter-container');
+            if (!filterContainer) {
+                const headerSection = dashboardView.querySelector('div'); // The header div
+                filterContainer = document.createElement('div');
+                filterContainer.id = 'dash-filter-container';
+                filterContainer.style.cssText = "padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #eee; display:flex; gap:10px; align-items:center;";
+                
+                filterContainer.innerHTML = `
+                    <select id="dash-status-filter" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:12px;">
+                        <option value="All">All Status</option>
+                        <option value="Open" selected>Open Only</option>
+                        <option value="Closed">Closed Only</option>
+                    </select>
+                    <select id="dash-sort-filter" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:12px;">
+                        <option value="Newest">Newest Created</option>
+                        <option value="Oldest">Oldest Created</option>
+                        <option value="RecentlyClosed">Recently Closed</option>
+                    </select>
+                    <span style="flex:1;"></span>
+                    <span id="dash-count" style="font-size:12px; color:#666;"></span>
+                `;
+                // Insert after header
+                headerSection.insertAdjacentElement('afterend', filterContainer);
+                
+                // Add Event Listeners
+                document.getElementById('dash-status-filter').addEventListener('change', renderDashboard);
+                document.getElementById('dash-sort-filter').addEventListener('change', renderDashboard);
             }
 
-            dashboardTable.innerHTML = '';
-            items.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.style.borderBottom = '1px solid #f1f3f4';
-                let typeColor = '#666';
-                if(item.type === 'Task') typeColor = '#ea4335';
-                if(item.type === 'Tag') typeColor = '#34a853';
-                
-                tr.innerHTML = `
-                    <td style="padding:12px; color:${typeColor}; font-weight:bold;">${item.type}</td>
-                    <td style="padding:12px; color:#202124;">${item.content}</td>
-                    <td style="padding:12px; color:#5f6368; font-size:12px;">${item.date.split(',')[0]}</td>
-                    <td style="padding:12px;">
-                        <button class="jump-btn" style="padding:4px 12px; background:#e8f0fe; color:#1967d2; border:none; border-radius:4px; cursor:pointer;">Jump ➔</button>
-                    </td>
+            // 3. Update Table Header (Remove Type, Add Dates)
+            const thead = document.querySelector('#dashboard-view thead tr');
+            if (thead) {
+                thead.innerHTML = `
+                    <th style="padding:8px; width:80px;">Status</th>
+                    <th style="padding:8px;">Content</th>
+                    <th style="padding:8px; width:140px;">Created</th>
+                    <th style="padding:8px; width:140px;">Closed</th>
+                    <th style="padding:8px; width:80px;">Action</th>
                 `;
-                tr.querySelector('.jump-btn').onclick = () => {
-                    dashboardView.style.display = 'none';
-                    let link = `https://docs.google.com/document/d/${item.fileId}/edit`;
-                    if (item.headerId) link += `#heading=${item.headerId}`;
-                    webview.src = link;
-                };
-                dashboardTable.appendChild(tr);
-            });
+            }
+
+            // 4. Render Function
+            function renderDashboard() {
+                const statusFilter = document.getElementById('dash-status-filter').value;
+                const sortFilter = document.getElementById('dash-sort-filter').value;
+                
+                // A. Filter
+                let filtered = allItems.filter(item => {
+                    if (statusFilter === 'All') return true;
+                    return item.status === statusFilter;
+                });
+
+                // B. Sort
+                filtered.sort((a, b) => {
+                    const dateA = new Date(a.created).getTime();
+                    const dateB = new Date(b.created).getTime();
+                    const closeA = a.closed ? new Date(a.closed).getTime() : 0;
+                    const closeB = b.closed ? new Date(b.closed).getTime() : 0;
+
+                    if (sortFilter === 'Newest') return dateB - dateA;
+                    if (sortFilter === 'Oldest') return dateA - dateB;
+                    if (sortFilter === 'RecentlyClosed') return closeB - closeA;
+                    return 0;
+                });
+
+                // C. Render Rows
+                dashboardTable.innerHTML = '';
+                document.getElementById('dash-count').innerText = `${filtered.length} tasks`;
+
+                if (filtered.length === 0) {
+                    dashboardTable.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No tasks found.</td></tr>';
+                    return;
+                }
+
+                filtered.forEach(item => {
+                    const tr = document.createElement('tr');
+                    // COMPACT UI: No border-bottom
+                    tr.style.cssText = "background: white;"; 
+                    // Zebra striping
+                    if (dashboardTable.children.length % 2 === 0) tr.style.background = "#fcfcfc";
+
+                    // Status Badge
+                    let statusColor = '#d93025'; // Red (Open)
+                    let statusBg = '#fce8e6';
+                    if (item.status === 'Closed') { statusColor = '#188038'; statusBg = '#e6f4ea'; }
+                    
+                    const createdDate = item.created ? item.created.split(',')[0] : '-';
+                    const closedDate = item.closed ? item.closed.split(',')[0] : '-';
+
+                    tr.innerHTML = `
+                        <td style="padding:4px 8px;">
+                            <span style="background:${statusBg}; color:${statusColor}; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block; width:45px; text-align:center;">
+                                ${item.status.toUpperCase()}
+                            </span>
+                        </td>
+                        <td style="padding:4px 8px; color:#202124; font-size:13px;">${item.content}</td>
+                        <td style="padding:4px 8px; color:#5f6368; font-size:11px;">${createdDate}</td>
+                        <td style="padding:4px 8px; color:#5f6368; font-size:11px;">${closedDate}</td>
+                        <td style="padding:4px 8px;">
+                            <button class="jump-btn" style="padding:2px 8px; background:#f1f3f4; color:#1967d2; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Jump</button>
+                        </td>
+                    `;
+                    tr.querySelector('.jump-btn').onclick = () => {
+                        dashboardView.style.display = 'none';
+                        let link = `https://docs.google.com/document/d/${item.fileId}/edit`;
+                        if (item.headerId) link += `#heading=${item.headerId}`;
+                        webview.src = link;
+                    };
+                    dashboardTable.appendChild(tr);
+                });
+            }
+
+            // Initial Render
+            renderDashboard();
         };
     }
     if (closeDashBtn) closeDashBtn.onclick = () => dashboardView.style.display = 'none';

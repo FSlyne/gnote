@@ -412,20 +412,79 @@ ipcMain.handle('drive:openDailyDiary', async () => {
     if (!authClient) return null;
     const drive = google.drive({ version: 'v3', auth: authClient });
     try {
-      const today = new Date().toLocaleDateString('en-CA'); 
+      const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+      
+      // 1. FIND/CREATE DESTINATION 'Daily' FOLDER
       let dailyFolderId;
-      const folderRes = await drive.files.list({ q: "mimeType='application/vnd.google-apps.folder' and name='Daily' and 'root' in parents and trashed=false", fields: 'files(id)', pageSize: 1 });
-      if (folderRes.data.files.length > 0) { dailyFolderId = folderRes.data.files[0].id; } else {
-        const newFolder = await drive.files.create({ resource: { name: 'Daily', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] }, fields: 'id' });
-        dailyFolderId = newFolder.data.id;
+      const folderRes = await drive.files.list({ 
+          q: "mimeType='application/vnd.google-apps.folder' and name='Daily' and 'root' in parents and trashed=false", 
+          fields: 'files(id)', 
+          pageSize: 1 
+      });
+      
+      if (folderRes.data.files.length > 0) { 
+          dailyFolderId = folderRes.data.files[0].id; 
+      } else {
+          const newFolder = await drive.files.create({ 
+              resource: { name: 'Daily', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] }, 
+              fields: 'id' 
+          });
+          dailyFolderId = newFolder.data.id;
       }
-      let fileToOpen;
-      const fileRes = await drive.files.list({ q: `name='${today}' and '${dailyFolderId}' in parents and trashed=false`, fields: 'files(id, name, mimeType, webViewLink, shortcutDetails)', pageSize: 1 });
-      if (fileRes.data.files.length > 0) { fileToOpen = fileRes.data.files[0]; } else {
-        const newFile = await drive.files.create({ resource: { name: today, mimeType: 'application/vnd.google-apps.document', parents: [dailyFolderId] }, fields: 'id, name, mimeType, webViewLink, shortcutDetails' });
-        fileToOpen = newFile.data;
+
+      // 2. CHECK IF FILE ALREADY EXISTS FOR TODAY
+      const fileRes = await drive.files.list({ 
+          q: `name='${today}' and '${dailyFolderId}' in parents and trashed=false`, 
+          fields: 'files(id, name, mimeType, webViewLink, shortcutDetails)', 
+          pageSize: 1 
+      });
+      
+      if (fileRes.data.files.length > 0) { 
+          // File exists, just open it
+          return fileRes.data.files[0]; 
+      } else {
+          // 3. TRY TO FIND TEMPLATE
+          let templateId = null;
+          try {
+              // Find 'Template' Folder in Root
+              const tplFolderRes = await drive.files.list({ 
+                  q: "mimeType='application/vnd.google-apps.folder' and name='Templates' and 'root' in parents and trashed=false", 
+                  fields: 'files(id)', 
+                  pageSize: 1 
+              });
+              
+              if (tplFolderRes.data.files.length > 0) {
+                  const tplFolderId = tplFolderRes.data.files[0].id;
+                  // Find 'Daily' File inside Template Folder
+                  const tplFileRes = await drive.files.list({ 
+                      q: `name='Daily' and '${tplFolderId}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false`, 
+                      fields: 'files(id)', 
+                      pageSize: 1 
+                  });
+                  if (tplFileRes.data.files.length > 0) {
+                      templateId = tplFileRes.data.files[0].id;
+                  }
+              }
+          } catch(e) { console.log('Template lookup failed, falling back to blank.'); }
+
+          // 4. CREATE THE FILE (Copy Template OR Create Blank)
+          if (templateId) {
+              // COPY TEMPLATE
+              const copyRes = await drive.files.copy({
+                  fileId: templateId,
+                  resource: { name: today, parents: [dailyFolderId] },
+                  fields: 'id, name, mimeType, webViewLink, shortcutDetails'
+              });
+              return copyRes.data;
+          } else {
+              // CREATE BLANK
+              const newFile = await drive.files.create({ 
+                  resource: { name: today, mimeType: 'application/vnd.google-apps.document', parents: [dailyFolderId] }, 
+                  fields: 'id, name, mimeType, webViewLink, shortcutDetails' 
+              });
+              return newFile.data;
+          }
       }
-      return fileToOpen;
     } catch (err) { throw err; }
 });
 ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {

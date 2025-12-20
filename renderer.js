@@ -673,7 +673,15 @@ function createTreeItem(file) {
                 children.style.display = 'block'; arrow.innerText = '▼'; arrow.classList.add('rotated');
                 // FETCH CHILDREN (Lazy Load)
                 if (children.children.length === 0) {
-                    const res = await window.api.listFiles(file.id);
+                    // --- FIX START ---
+                    // If this is a shortcut, list the files of the TARGET, not the shortcut itself
+                    let searchId = file.id;
+                    if (isShortcut && file.shortcutDetails) {
+                        searchId = file.shortcutDetails.targetId;
+                    }
+
+                    const res = await window.api.listFiles(searchId);
+                    // --- FIX END ---
                     if (res.length === 0) children.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
                     else res.forEach(child => children.appendChild(createTreeItem(child)));
                 }

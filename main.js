@@ -1,15 +1,23 @@
+require('dotenv').config(); // Load environment variables for API Key
 const { app, BrowserWindow, ipcMain, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const http = require('http');
 const url = require('url');
 const fs = require('fs');
 const { google } = require('googleapis');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-// GLOBAL VARIABLES
+// =============================================================================
+// 1. CONFIGURATION & GLOBALS
+// =============================================================================
+
 let win;
 let authClient = null;
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
+
+// Initialize Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || ""); 
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
@@ -19,9 +27,10 @@ const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets'
 ];
 
-// ---------------------------------------------------------
-// 1. AUTHENTICATION
-// ---------------------------------------------------------
+// =============================================================================
+// 2. AUTHENTICATION LOGIC
+// =============================================================================
+
 function loadSavedCredentials() {
   if (fs.existsSync(TOKEN_PATH) && fs.existsSync(CREDENTIALS_PATH)) {
     try {
@@ -46,7 +55,7 @@ async function startAuthentication() {
     const server = http.createServer(async (req, res) => {
       if (req.url.indexOf('/oauth2callback') > -1) {
         const qs = new url.URL(req.url, 'http://localhost:3000').searchParams;
-        res.end('<h1>Login Successful!</h1>');
+        res.end('<h1>Login Successful!</h1><script>window.close();</script>');
         server.close();
         const { tokens } = await oAuth2Client.getToken(qs.get('code'));
         oAuth2Client.setCredentials(tokens);
@@ -60,9 +69,9 @@ async function startAuthentication() {
   });
 }
 
-// ---------------------------------------------------------
-// 2. HELPER FUNCTIONS (Sheets)
-// ---------------------------------------------------------
+// =============================================================================
+// 3. HELPER FUNCTIONS
+// =============================================================================
 
 async function getOrCreateSheetId(sheets, spreadsheetId, title) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
@@ -71,7 +80,6 @@ async function getOrCreateSheetId(sheets, spreadsheetId, title) {
   if (sheet) {
     return sheet.properties.sheetId;
   } else {
-    // NEW SCHEMA for Tasks: Created, Closed, FileID, HeaderID, Status, Content
     let headers = ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
     if (title === 'Tasks') {
         headers = ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
@@ -102,9 +110,52 @@ async function getOrCreateSheetId(sheets, spreadsheetId, title) {
   }
 }
 
-// ---------------------------------------------------------
-// 3. API HANDLERS
-// ---------------------------------------------------------
+function extractTextFromDoc(docData) {
+    let text = "";
+    if (!docData.body || !docData.body.content) return text;
+    docData.body.content.forEach(elem => {
+        if (elem.paragraph) {
+            elem.paragraph.elements.forEach(e => {
+                if (e.textRun) text += e.textRun.content;
+            });
+        }
+    });
+    return text;
+}
+
+// =============================================================================
+// 4. API HANDLERS (IPC MAIN)
+// =============================================================================
+
+// --- A. AI HANDLERS ---
+
+ipcMain.handle('ai:processContent', async (event, { fileId, promptType, userQuery }) => {
+  if (!authClient) return { error: "Not authenticated" };
+  
+  // 1. Fetch File Content
+  const docs = google.docs({ version: 'v1', auth: authClient });
+  const docRes = await docs.documents.get({ documentId: fileId });
+  const docContent = extractTextFromDoc(docRes.data);
+
+  // 2. Prepare AI Model (Using Stable Alias)
+  const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
+  
+  let prompt = "";
+  if (promptType === 'summarize') {
+      prompt = `Please provide a concise summary of the following document:\n\n${docContent}`;
+  } else if (promptType === 'organize') {
+      prompt = `Analyze this content and suggest a folder structure or tags to organize it:\n\n${docContent}`;
+  } else if (promptType === 'ask') {
+      prompt = `I am going to provide you with a document. Please answer the following question based ONLY on that document.\n\nQuestion: ${userQuery}\n\nDocument Content:\n${docContent}`;
+  }
+
+  // 3. Generate Content
+  const result = await model.generateContent(prompt);
+  const response = await result.response;
+  return { text: response.text() };
+});
+
+// --- B. SHEETS & SYNC HANDLERS (FIXED) ---
 
 ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
   if (!authClient) return false;
@@ -112,6 +163,7 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
   const drive = google.drive({ version: 'v3', auth: authClient });
 
   try {
+    // 1. Find/Create Master Index
     let spreadsheetId;
     const search = await drive.files.list({
       q: "name='Master Index' and mimeType='application/vnd.google-apps.spreadsheet' and 'root' in parents and trashed=false",
@@ -127,7 +179,7 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
 
     const nowStr = new Date().toLocaleString();
 
-    // --- HANDLE TASKS (Smart Merge) ---
+    // 2. Process Tasks
     const currentTasks = items.filter(i => i.type.includes('Task')).map(i => ({
         status: i.type.includes('(Done)') ? 'Closed' : 'Open',
         text: i.text,
@@ -136,16 +188,18 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
 
     if (currentTasks.length > 0) {
         await getOrCreateSheetId(sheets, spreadsheetId, 'Tasks');
-        
         const range = 'Tasks!A:F';
-        const readRes = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-        const allRows = readRes.data.values || [];
-        const header = allRows[0] || ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
         
-        // Filter out OTHER files
+        let allRows = [];
+        try {
+             const readRes = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+             allRows = readRes.data.values || [];
+        } catch(e) {}
+        
+        const header = (allRows.length > 0) ? allRows[0] : ['Created', 'Closed', 'File ID', 'Header ID', 'Status', 'Content'];
         const otherFileRows = allRows.slice(1).filter(row => row[2] !== fileId);
         
-        // Find existing rows for THIS file
+        // Preserve history for existing rows
         const myOldRows = allRows.slice(1).filter(row => row[2] === fileId);
         const historyMap = new Map();
         myOldRows.forEach(row => {
@@ -153,17 +207,13 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
             historyMap.set(key, { created: row[0], closed: row[1] });
         });
 
-        // Build NEW rows
         const newRows = currentTasks.map(task => {
             const key = task.headerId + '|' + task.text;
             const history = historyMap.get(key);
-            
             let created = history ? history.created : nowStr;
             let closed = history ? history.closed : '';
-
             if (task.status === 'Closed' && !closed) closed = nowStr;
             if (task.status === 'Open') closed = '';
-
             return [created, closed, fileId, task.headerId, task.status, task.text];
         });
 
@@ -174,33 +224,18 @@ ipcMain.handle('sheet:syncData', async (event, { fileId, items }) => {
         });
     }
 
-
-// TOGGLE STAR STATUS
-ipcMain.handle('drive:toggleStar', async (event, { fileId, addStar }) => {
-  if (!authClient) return false;
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  try {
-    await drive.files.update({
-      fileId: fileId,
-      resource: { starred: addStar },
-      fields: 'id, starred'
-    });
-    return true;
-  } catch (err) {
-    console.error("Star Error:", err);
-    throw err;
-  }
-});
-
-    // --- HANDLE TAGS ---
+    // 3. Process Tags
     const currentTags = items.filter(i => !i.type.includes('Task'));
     if (currentTags.length > 0) {
         await getOrCreateSheetId(sheets, spreadsheetId, 'Tags');
         const tagRange = 'Tags!A:E';
-        const tagRead = await sheets.spreadsheets.values.get({ spreadsheetId, range: tagRange });
-        const allTagRows = tagRead.data.values || [];
-        const tagHeader = allTagRows[0] || ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
-        
+        let allTagRows = [];
+        try {
+            const tagRead = await sheets.spreadsheets.values.get({ spreadsheetId, range: tagRange });
+            allTagRows = tagRead.data.values || [];
+        } catch(e) {}
+
+        const tagHeader = (allTagRows.length > 0) ? allTagRows[0] : ['Date Synced', 'File ID', 'Header ID', 'Type', 'Content'];
         const keptTagRows = allTagRows.slice(1).filter(r => r[1] !== fileId);
         const newTagRows = currentTags.map(i => [nowStr, fileId, i.headerId||'', i.type, i.text]);
         
@@ -230,8 +265,6 @@ ipcMain.handle('sheet:getAllItems', async () => {
     if (search.data.files.length === 0) return [];
     
     const spreadsheetId = search.data.files[0].id;
-    
-    // Read Tasks (A:F)
     let res;
     try { res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tasks!A2:F' }); } catch(e) { return []; }
 
@@ -247,7 +280,6 @@ ipcMain.handle('sheet:getAllItems', async () => {
   } catch (err) { return []; }
 });
 
-// ... (Keep existing handlers for Doc Scan, Tags, Drive operations) ...
 ipcMain.handle('sheet:getAllTags', async () => {
   if (!authClient) return {};
   const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -274,6 +306,25 @@ ipcMain.handle('sheet:getAllTags', async () => {
     return tagMap;
   } catch (err) { return {}; }
 });
+
+// --- C. DRIVE & DOC HANDLERS ---
+
+ipcMain.handle('drive:toggleStar', async (event, { fileId, addStar }) => {
+  if (!authClient) return false;
+  const drive = google.drive({ version: 'v3', auth: authClient });
+  try {
+    await drive.files.update({
+      fileId: fileId,
+      resource: { starred: addStar },
+      fields: 'id, starred'
+    });
+    return true;
+  } catch (err) {
+    console.error("Star Error:", err);
+    throw err;
+  }
+});
+
 ipcMain.handle('doc:scanContent', async (event, fileId) => {
   if (!authClient) return null;
   const docs = google.docs({ version: 'v1', auth: authClient });
@@ -290,7 +341,9 @@ ipcMain.handle('doc:scanContent', async (event, fileId) => {
     return { title: docRes.data.title, doc: docRes.data, comments: comments };
   } catch (err) { return null; }
 });
+
 ipcMain.handle('auth:openWebLogin', async () => { try { await startAuthentication(); return true; } catch (e) { return false; } });
+
 ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   if (!authClient) loadSavedCredentials();
   if (!authClient) return [];
@@ -305,28 +358,21 @@ ipcMain.handle('drive:listFiles', async (event, folderId = 'root') => {
   } catch (err) { return []; }
 });
 
-// [main.js]
-
 ipcMain.handle('drive:getStarredFiles', async () => {
   if (!authClient) loadSavedCredentials();
   if (!authClient) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
   try {
     const res = await drive.files.list({
-      // Query for starred items, excluding trash
       q: "starred = true and trashed = false",
       pageSize: 50,
-      // Same fields as listFiles so your renderer handles them easily
       fields: 'files(id, name, mimeType, webViewLink, iconLink, parents, shortcutDetails, appProperties)',
       orderBy: 'folder, name',
       includeItemsFromAllDrives: true, 
       supportsAllDrives: true,
     });
     return res.data.files ?? [];
-  } catch (err) { 
-    console.error("Starred Fetch Error:", err);
-    return []; 
-  }
+  } catch (err) { return []; }
 });
 
 ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
@@ -338,6 +384,7 @@ ipcMain.handle('drive:searchFiles', async (event, { query, searchContent }) => {
     return res.data.files ?? [];
   } catch (err) { return []; }
 });
+
 ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -346,11 +393,13 @@ ipcMain.handle('drive:createFile', async (event, { parentId, name, mimeType }) =
   });
   return file.data;
 });
+
 ipcMain.handle('drive:renameFile', async (event, { fileId, newName }) => {
   if (!authClient) return false;
   const drive = google.drive({ version: 'v3', auth: authClient });
   try { await drive.files.update({ fileId: fileId, resource: { name: newName }, fields: 'id, name' }); return true; } catch (e) { throw e; }
 });
+
 ipcMain.handle('drive:createSectionLink', async (event, { parentId, name, sourceFileId, headerId }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -364,12 +413,14 @@ ipcMain.handle('drive:createSectionLink', async (event, { parentId, name, source
       return file.data;
   } catch(e) { throw e; }
 });
+
 ipcMain.handle('drive:moveFile', async (event, { fileId, oldParentId, newParentId }) => {
   if (!authClient) return false;
   const drive = google.drive({ version: 'v3', auth: authClient });
   await drive.files.update({ fileId: fileId, addParents: newParentId, removeParents: oldParentId, fields: 'id, parents' });
   return true;
 });
+
 ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -399,22 +450,23 @@ ipcMain.handle('drive:getFileDetails', async (event, fileId) => {
   meta.fullPath = pathString;
   return { metadata: meta, revisions: revisions.reverse() };
 });
+
 ipcMain.handle('drive:createShortcut', async (event, { targetId, parentId, name }) => {
   if (!authClient) return null;
   const drive = google.drive({ version: 'v3', auth: authClient });
-  constQX = await drive.files.create({
+  const res = await drive.files.create({
     resource: { name: name, parents: [parentId], mimeType: 'application/vnd.google-apps.shortcut', shortcutDetails: { targetId: targetId } },
     fields: 'id, name, mimeType, webViewLink, iconLink'
   });
-  return constQX.data;
+  return res.data;
 });
+
 ipcMain.handle('drive:openDailyDiary', async () => {
     if (!authClient) return null;
     const drive = google.drive({ version: 'v3', auth: authClient });
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
       
-      // 1. FIND/CREATE DESTINATION 'Daily' FOLDER
       let dailyFolderId;
       const folderRes = await drive.files.list({ 
           q: "mimeType='application/vnd.google-apps.folder' and name='Daily' and 'root' in parents and trashed=false", 
@@ -432,7 +484,6 @@ ipcMain.handle('drive:openDailyDiary', async () => {
           dailyFolderId = newFolder.data.id;
       }
 
-      // 2. CHECK IF FILE ALREADY EXISTS FOR TODAY
       const fileRes = await drive.files.list({ 
           q: `name='${today}' and '${dailyFolderId}' in parents and trashed=false`, 
           fields: 'files(id, name, mimeType, webViewLink, shortcutDetails)', 
@@ -440,13 +491,10 @@ ipcMain.handle('drive:openDailyDiary', async () => {
       });
       
       if (fileRes.data.files.length > 0) { 
-          // File exists, just open it
           return fileRes.data.files[0]; 
       } else {
-          // 3. TRY TO FIND TEMPLATE
           let templateId = null;
           try {
-              // Find 'Template' Folder in Root
               const tplFolderRes = await drive.files.list({ 
                   q: "mimeType='application/vnd.google-apps.folder' and name='Templates' and 'root' in parents and trashed=false", 
                   fields: 'files(id)', 
@@ -455,7 +503,6 @@ ipcMain.handle('drive:openDailyDiary', async () => {
               
               if (tplFolderRes.data.files.length > 0) {
                   const tplFolderId = tplFolderRes.data.files[0].id;
-                  // Find 'Daily' File inside Template Folder
                   const tplFileRes = await drive.files.list({ 
                       q: `name='Daily' and '${tplFolderId}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false`, 
                       fields: 'files(id)', 
@@ -465,11 +512,9 @@ ipcMain.handle('drive:openDailyDiary', async () => {
                       templateId = tplFileRes.data.files[0].id;
                   }
               }
-          } catch(e) { console.log('Template lookup failed, falling back to blank.'); }
+          } catch(e) {}
 
-          // 4. CREATE THE FILE (Copy Template OR Create Blank)
           if (templateId) {
-              // COPY TEMPLATE
               const copyRes = await drive.files.copy({
                   fileId: templateId,
                   resource: { name: today, parents: [dailyFolderId] },
@@ -477,7 +522,6 @@ ipcMain.handle('drive:openDailyDiary', async () => {
               });
               return copyRes.data;
           } else {
-              // CREATE BLANK
               const newFile = await drive.files.create({ 
                   resource: { name: today, mimeType: 'application/vnd.google-apps.document', parents: [dailyFolderId] }, 
                   fields: 'id, name, mimeType, webViewLink, shortcutDetails' 
@@ -487,6 +531,7 @@ ipcMain.handle('drive:openDailyDiary', async () => {
       }
     } catch (err) { throw err; }
 });
+
 ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {
   if (!authClient || !fileIds || fileIds.length === 0) return [];
   const drive = google.drive({ version: 'v3', auth: authClient });
@@ -497,41 +542,31 @@ ipcMain.handle('drive:getFilesByIds', async (event, fileIds) => {
     return results.filter(f => f !== null);
   } catch(e) { return []; }
 });
+
 ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url));
 
-// ---------------------------------------------------------
-// 4. MENUS
-// ---------------------------------------------------------
+// =============================================================================
+// 5. MENUS
+// =============================================================================
 
-// Helper to Send Commands to Renderer
 function sendCommand(action, data = {}) {
     if (win && win.webContents) {
         win.webContents.send('menu-action', { action, ...data });
     }
 }
 
+function sendAction(event, action, data) { event.sender.send('menu-action', { action, data }); }
+
 function createApplicationMenu() {
     const template = [
-        { role: 'fileMenu' }, // Standard Mac/Windows File menu
-        { label: 'Edit', role: 'editMenu' }, // Standard Edit (Copy/Paste)
+        { role: 'fileMenu' },
+        { label: 'Edit', role: 'editMenu' },
         { 
             label: 'View', 
             submenu: [
-                { 
-                    label: 'Task Dashboard', 
-                    accelerator: 'CmdOrCtrl+D', 
-                    click: () => sendCommand('toggle-dashboard') 
-                },
-                { 
-                    label: 'Toggle Scanner Pane', 
-                    accelerator: 'CmdOrCtrl+/', 
-                    click: () => sendCommand('toggle-scanner') 
-                },
-                { 
-                    label: 'Show Graph View', 
-                    accelerator: 'CmdOrCtrl+G', 
-                    click: () => sendCommand('show-graph') 
-                },
+                { label: 'Task Dashboard', accelerator: 'CmdOrCtrl+D', click: () => sendCommand('toggle-dashboard') },
+                { label: 'Toggle Scanner Pane', accelerator: 'CmdOrCtrl+/', click: () => sendCommand('toggle-scanner') },
+                { label: 'Show Graph View', accelerator: 'CmdOrCtrl+G', click: () => sendCommand('show-graph') },
                 { type: 'separator' },
                 { role: 'reload' },
                 { role: 'forceReload' },
@@ -547,32 +582,39 @@ function createApplicationMenu() {
         { 
             label: 'Go', 
             submenu: [
-                { 
-                    label: 'Today\'s Diary', 
-                    accelerator: 'CmdOrCtrl+T', 
-                    click: () => sendCommand('open-today') 
-                }
+                { label: 'Today\'s Diary', accelerator: 'CmdOrCtrl+T', click: () => sendCommand('open-today') }
             ] 
         },
         { role: 'windowMenu' },
-        { role: 'help', submenu: [{ label: 'About', click: async () => { /* ... */ } }] }
     ];
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);
 }
 
-// IPC FOR CONTEXT MENUS (Right-click)
+// CONTEXT MENUS
 ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, clipboardItem, shortcutDetails }) => {
   const template = [];
-  const isRoot = id === 'root'; // CHECK FOR ROOT
+  const isRoot = id === 'root'; 
 
-  // 1. OPEN LOCATION (Skip for Root)
+  // AI ACTIONS
+  if (!isRoot) {
+      template.push({ 
+          label: '✨ Summarize with AI', 
+          click: () => sendAction(event, 'ai-summarize', { id, name, mimeType: 'application/vnd.google-apps.document' }) 
+      });
+      template.push({ 
+          label: '🤖 Ask Questions', 
+          click: () => sendAction(event, 'ai-ask', { id, name }) 
+      });
+      template.push({ type: 'separator' });
+  }
+
+  // STANDARD ACTIONS
   if (parentId && parentId !== 'root' && !isRoot) {
       template.push({ label: '📂 Open File Location', click: () => shell.openExternal(`https://drive.google.com/drive/folders/${parentId}`) });
       template.push({ type: 'separator' });
   }
 
-  // 2. CREATION ACTIONS (Always allow on Root or Folders)
   if (isFolder || isRoot) {
     template.push(
       { label: '📂 New Folder...', click: () => sendAction(event, 'create', { type: 'folder', parentId: id }) },
@@ -582,11 +624,7 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
     );
   }
 
-  // 3. DESTRUCTIVE ACTIONS (Hide for Root)
   if (!isRoot) {
-    template.push({ type: 'separator' });
-      
-      // ADD STAR ACTIONS
       template.push({ 
           label: '⭐ Add to Starred', 
           click: () => sendAction(event, 'toggle-star', { id, addStar: true }) 
@@ -595,23 +633,21 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
           label: '☆ Remove from Starred', 
           click: () => sendAction(event, 'toggle-star', { id, addStar: false }) 
       });
+      template.push({ type: 'separator' });
       template.push({ label: '✏️ Rename', click: () => sendAction(event, 'rename', { id, name, parentId }) });
       template.push({ label: 'Edit in App', click: () => sendAction(event, 'edit', { id, name, link, shortcutDetails }) });
+      template.push({ label: '🤖 Summarize with AI', click: () => sendAction(event, 'ai-summarize', { id, name, link, isFolder }) });
+      template.push({ label: '❓ Ask AI About This', click: () => sendAction(event, 'ai-question', { id, name, link, isFolder }) });
       template.push({ type: 'separator' });
-      
       template.push({ label: '✂️ Cut File/Folder', click: () => sendAction(event, 'cut-item', { id, name, parentId }) });
       template.push({ label: '🔗 Copy Shortcut Ref', click: () => sendAction(event, 'copy-ref', { id, name }) });
   }
 
-  // 4. PASTE (Allow on Root)
   if ((isFolder || isRoot) && clipboardItem) {
       let pasteLabel = '';
       if (clipboardItem.mode === 'move') pasteLabel = `📋 Paste "${clipboardItem.name}" (Move Here)`;
       else if (clipboardItem.mode === 'shortcut') pasteLabel = `🔗 Paste Shortcut to "${clipboardItem.name}"`;
-      
-      if (pasteLabel) {
-        template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) });
-      }
+      if (pasteLabel) template.push({ label: pasteLabel, click: () => sendAction(event, 'paste-item', { parentId: id }) });
   }
 
   if (!isRoot) {
@@ -622,19 +658,17 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
-function sendAction(event, action, data) { event.sender.send('menu-action', { action, data }); }
 ipcMain.on('show-header-menu', (event, { url }) => {
   Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
-ipcMain.on('show-header-menu', (event, { url }) => {
-  Menu.buildFromTemplate([{ label: `Copy Link to Header`, click: () => clipboard.writeText(url) }]).popup({ window: BrowserWindow.fromWebContents(event.sender) });
-});
+// =============================================================================
+// 6. INIT
+// =============================================================================
 
-// 5. WINDOW CREATION
 async function createWindow() {
   loadSavedCredentials();
-  createApplicationMenu(); // <--- CREATE MENU HERE
+  createApplicationMenu();
   win = new BrowserWindow({
     width: 1200, height: 800, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true }
@@ -642,5 +676,6 @@ async function createWindow() {
   win.loadFile('index.html');
   win.once('ready-to-show', () => win.show());
 }
+
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

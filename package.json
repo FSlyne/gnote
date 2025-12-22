@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.2.3",
     "googleapis": "^168.0.0",
+    "marked": "^17.0.1",
     "server-destroy": "^1.0.1"
   }
 }

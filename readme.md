@@ -51,6 +51,8 @@ Context Menu: Right-click any file/folder to:
 
 Location Path: Details modal shows the full Drive path (Location) alongside type, size, and recent revisions.
 
+AI Actions: Right-click files/folders to "Summarize with AI" or "Ask AI About This"; uses document content for context and returns inline responses.
+
 Creation Modal: A unified interface to create new files, folders, or web links.
 
 4. Advanced "Pseudo-File" System
@@ -75,6 +77,8 @@ External Link Interception: Links clicked inside a Google Doc (or Pseudo-files) 
 Crash Prevention: Custom User-Agent handling to prevent Google Drive from blocking the Electron embedded view.
 
 Security: Implemented Content Security Policy (CSP) and restricted webview permissions (no popups) for safety.
+
+Resilience: Tag loading and Drive search calls timeout with user-visible errors instead of freezing the UI.
 
 7. User Interface
 Resizable Layout: The right sidebar (Scanner) can be resized or toggled on/off.

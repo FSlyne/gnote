@@ -1,20 +1,26 @@
 document.addEventListener('DOMContentLoaded', () => {
+
+    // Ensure preload bridge is available
+    if (!window.api) {
+        const status = document.getElementById('status');
+        if (status) status.innerText = 'API bridge unavailable';
+        console.error('window.api is undefined; preload may have failed to load.');
+        return;
+    }
     
     // =========================================================================
     // 1. DOM ELEMENTS
     // =========================================================================
-    
-    // MAIN LAYOUT
     const sidebar = document.getElementById('sidebar');
     const webview = document.getElementById('doc-view');
     const status = document.getElementById('status');
 
-    // RESIZABLE RIGHT PANE
+    // PANES
     const scannerPane = document.getElementById('scanner-pane'); 
     const dragHandle = document.getElementById('drag-handle');
     const togglePaneBtn = document.getElementById('toggle-pane-btn'); 
 
-    // LEFT SIDEBAR TOOLS
+    // TOOLS
     const fileList = document.getElementById('file-list');
     const recentSection = document.getElementById('recent-section');
     const recentList = document.getElementById('recent-list');
@@ -26,20 +32,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const tagFilter = document.getElementById('tag-filter');
     const dailyBtn = document.getElementById('daily-btn');         
     const dashboardBtn = document.getElementById('dashboard-btn'); 
+    const starredBtn = document.getElementById('starred-btn');
     
-    // RIGHT SIDEBAR CONTENT
+    // CONTENT
     const localTagsSection = document.getElementById('local-tags-section');
     const localTagsContainer = document.getElementById('local-tags-container');
     const docStructure = document.getElementById('doc-structure');
     const globalTagsContainer = document.getElementById('global-tags-container');
     const refreshTagsBtn = document.getElementById('refresh-tags-btn');
 
-    // DASHBOARD OVERLAY
+    // OVERLAYS
     const dashboardView = document.getElementById('dashboard-view');
     const dashboardTable = document.getElementById('dashboard-table-body');
     const closeDashBtn = document.getElementById('close-dash-btn');
-
-    // GRAPH VIEW
     const graphView = document.getElementById('graph-view');
     const closeGraphBtn = document.getElementById('close-graph-btn');
     const networkContainer = document.getElementById('network-container');
@@ -54,47 +59,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const detailsTitle = document.getElementById('details-title');
     const metaTable = document.getElementById('meta-table-body');
     const versionsList = document.getElementById('versions-list');
+    const versionsContainer = document.getElementById('versions-container');
     const closeDetailsBtn = document.getElementById('close-details-btn');
 
- // 1. Get the button element
-    const starredBtn = document.getElementById('starred-btn');
-
-    // 2. Define the click handler
-    if (starredBtn) {
-        starredBtn.onclick = async () => {
-            starredBtn.classList.add('active'); // Add visual state
-            status.innerText = "Loading Starred files...";
-            
-            // Clear current list and show loading state
-            fileList.innerHTML = '<div style="padding:10px; color:#666; font-size:12px;">Fetching starred items...</div>';
-            
-            try {
-                // Call the new API
-                const files = await window.api.getStarredFiles();
-                
-                fileList.innerHTML = '';
-                if (files.length === 0) {
-                    fileList.innerHTML = '<div style="padding:10px; color:#999;">No starred files found.</div>';
-                } else {
-                    // Reuse your existing createTreeItem function to render them
-                    files.forEach(file => fileList.appendChild(createTreeItem(file)));
-                }
-                status.innerText = `Found ${files.length} starred items.`;
-            } catch (e) {
-                console.error(e);
-                status.innerText = "Error loading starred files.";
-            }
-        };
-    }
+    const questionModal = document.getElementById('question-modal');
+    const questionInput = document.getElementById('question-input');
+    const askAiBtn = document.getElementById('ask-ai-btn');
+    const cancelQuestionBtn = document.getElementById('cancel-question-btn');
+    const aiContextLabel = document.getElementById('ai-context-label');
 
     // =========================================================================
-    // 2. STATE MANAGEMENT
+    // 2. STATE
     // =========================================================================
-    
     let searchTimeout = null;
     let pendingCreation = null;
     let pendingRename = null;
-    let isRecentExpanded = true;
+    let pendingAIFile = null; 
     let isResizing = false;
     let clipboardItem = null; 
     let currentFileId = null;
@@ -104,10 +84,54 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_RECENT = 10;
 
     // =========================================================================
-    // 3. CORE ACTIONS (Menu & Buttons)
+    // 3. HELPERS
     // =========================================================================
 
-    // TOGGLE SCANNER PANE
+    // HELPER: Extract text from Google Doc JSON structure
+    // Defined here so it's accessible to both Menu Actions and Button Clicks
+    async function getDocTextSnippet(fileId, limit = 6000) {
+        try {
+            const res = await window.api.scanContent(fileId);
+            if (!res || !res.doc || !res.doc.body || !res.doc.body.content) return null;
+            
+            const chunks = [];
+            let length = 0;
+            
+            const addText = (text) => {
+                if (!text) return;
+                if (length >= limit) return;
+                const slice = text.replace(/\s+/g, ' ').trim();
+                if (slice) {
+                    chunks.push(slice);
+                    length += slice.length;
+                }
+            };
+            
+            const walk = (contentList) => {
+                contentList.forEach(el => {
+                    if (el.paragraph && el.paragraph.elements) {
+                        el.paragraph.elements.forEach(elem => {
+                            if (elem.textRun && elem.textRun.content) addText(elem.textRun.content);
+                        });
+                    }
+                    if (el.table) {
+                        el.table.tableRows.forEach(row => row.tableCells.forEach(cell => walk(cell.content || [])));
+                    }
+                });
+            };
+            
+            walk(res.doc.body.content);
+            return chunks.join('\n\n'); 
+        } catch (e) {
+            console.warn('Doc snippet extraction failed:', e);
+            return null;
+        }
+    }
+
+    // =========================================================================
+    // 4. CORE UI ACTIONS
+    // =========================================================================
+
     function toggleScanner() {
         if (!scannerPane) return;
         const isHidden = scannerPane.style.display === 'none';
@@ -116,7 +140,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (togglePaneBtn) togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫'; 
     }
 
-    // OPEN TASK DASHBOARD
     async function openDashboard() {
         if (!dashboardView) return;
         dashboardView.style.display = 'flex';
@@ -124,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const allItems = await window.api.getAllItems();
         
-        // Setup Filter UI (only once)
+        // Render Dashboard Logic
         let filterContainer = document.getElementById('dash-filter-container');
         if (!filterContainer) {
             const headerSection = dashboardView.querySelector('div');
@@ -140,7 +163,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 <select id="dash-sort-filter" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:12px;">
                     <option value="Newest">Newest Created</option>
                     <option value="Oldest">Oldest Created</option>
-                    <option value="RecentlyClosed">Recently Closed</option>
                 </select>
                 <span style="flex:1;"></span>
                 <span id="dash-count" style="font-size:12px; color:#666;"></span>
@@ -148,17 +170,6 @@ document.addEventListener('DOMContentLoaded', () => {
             headerSection.insertAdjacentElement('afterend', filterContainer);
             document.getElementById('dash-status-filter').addEventListener('change', renderDashboard);
             document.getElementById('dash-sort-filter').addEventListener('change', renderDashboard);
-        }
-
-        const thead = document.querySelector('#dashboard-view thead tr');
-        if (thead) {
-            thead.innerHTML = `
-                <th style="padding:8px; width:80px;">Status</th>
-                <th style="padding:8px;">Content</th>
-                <th style="padding:8px; width:140px;">Created</th>
-                <th style="padding:8px; width:140px;">Closed</th>
-                <th style="padding:8px; width:80px;">Action</th>
-            `;
         }
 
         function renderDashboard() {
@@ -173,12 +184,8 @@ document.addEventListener('DOMContentLoaded', () => {
             filtered.sort((a, b) => {
                 const dateA = new Date(a.created).getTime();
                 const dateB = new Date(b.created).getTime();
-                const closeA = a.closed ? new Date(a.closed).getTime() : 0;
-                const closeB = b.closed ? new Date(b.closed).getTime() : 0;
                 if (sortFilter === 'Newest') return dateB - dateA;
-                if (sortFilter === 'Oldest') return dateA - dateB;
-                if (sortFilter === 'RecentlyClosed') return closeB - closeA;
-                return 0;
+                return dateA - dateB;
             });
 
             dashboardTable.innerHTML = '';
@@ -193,7 +200,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const tr = document.createElement('tr');
                 tr.style.cssText = "background: white;"; 
                 if (dashboardTable.children.length % 2 === 0) tr.style.background = "#fcfcfc";
-
                 let statusColor = '#d93025'; let statusBg = '#fce8e6';
                 if (item.status === 'Closed') { statusColor = '#188038'; statusBg = '#e6f4ea'; }
                 
@@ -205,7 +211,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                     <td style="padding:4px 8px; color:#202124; font-size:13px;">${item.content}</td>
                     <td style="padding:4px 8px; color:#5f6368; font-size:11px;">${item.created ? item.created.split(',')[0] : '-'}</td>
-                    <td style="padding:4px 8px; color:#5f6368; font-size:11px;">${item.closed ? item.closed.split(',')[0] : '-'}</td>
                     <td style="padding:4px 8px;">
                         <button class="jump-btn" style="padding:2px 8px; background:#f1f3f4; color:#1967d2; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Jump</button>
                     </td>
@@ -222,7 +227,6 @@ document.addEventListener('DOMContentLoaded', () => {
         renderDashboard();
     }
 
-    // OPEN DAILY DIARY
     async function openToday() {
         status.innerText = "Locating Daily Diary...";
         try {
@@ -237,11 +241,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // SHOW GRAPH VIEW
     function showGraph() {
         if(!graphView) return;
         graphView.style.display = 'block';
-        
         const nodes = []; const edges = []; const processedFiles = new Set();
         Object.keys(globalTagMap).forEach((tag) => {
             nodes.push({ id: tag, label: tag, color: '#34a853', shape: 'hexagon', size: 20, font: { color: 'white' } });
@@ -271,7 +273,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 4. BINDINGS (Buttons + Menu Events)
+    // 5. EVENT BINDINGS
     // =========================================================================
 
     if (togglePaneBtn) togglePaneBtn.onclick = toggleScanner;
@@ -280,15 +282,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (closeDashBtn) closeDashBtn.onclick = () => dashboardView.style.display = 'none';
     if (closeGraphBtn) closeGraphBtn.onclick = () => graphView.style.display = 'none';
 
-    // HANDLE DRAG RESIZE
+    if (starredBtn) {
+        starredBtn.onclick = async () => {
+            starredBtn.classList.add('active'); 
+            status.innerText = "Loading Starred files...";
+            fileList.innerHTML = '<div style="padding:10px; color:#666; font-size:12px;">Fetching starred items...</div>';
+            try {
+                const files = await window.api.getStarredFiles();
+                fileList.innerHTML = '';
+                if (files.length === 0) {
+                    fileList.innerHTML = '<div style="padding:10px; color:#999;">No starred files found.</div>';
+                } else {
+                    files.forEach(file => fileList.appendChild(createTreeItem(file)));
+                }
+                status.innerText = `Found ${files.length} starred items.`;
+            } catch (e) {
+                console.error(e);
+                status.innerText = "Error loading starred files.";
+            }
+        };
+    }
+
+    // DRAG RESIZE
     if (dragHandle && scannerPane) {
         dragHandle.addEventListener('mousedown', (e) => {
-            e.preventDefault(); 
-            isResizing = true;
-            dragHandle.classList.add('active');
+            e.preventDefault(); isResizing = true; dragHandle.classList.add('active');
             if (webview) webview.style.pointerEvents = 'none';
-            document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none'; document.body.style.cursor = 'col-resize';
         });
         document.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
@@ -297,8 +317,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         document.addEventListener('mouseup', () => {
             if (isResizing) {
-                isResizing = false;
-                dragHandle.classList.remove('active');
+                isResizing = false; dragHandle.classList.remove('active');
                 if (webview) webview.style.pointerEvents = 'auto';
                 document.body.style.userSelect = ''; document.body.style.cursor = '';     
             }
@@ -306,69 +325,117 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 5. GLOBAL LISTENERS (Menu Actions)
+    // 6. MENU & AI ACTION HANDLER (FIXED)
     // =========================================================================
 
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
-            // GLOBAL COMMANDS
+            
+            // --- GLOBAL COMMANDS ---
             if (action === 'toggle-dashboard') openDashboard();
             if (action === 'toggle-scanner') toggleScanner();
             if (action === 'show-graph') showGraph();
             if (action === 'open-today') openToday();
 
-            // STAR ACTION
+            // --- AI SUMMARIZE ---
+            if (action === 'ai-summarize') {
+                status.innerText = `Reading ${data.name}...`;
+                // 1. Get Text
+                const contextText = await getDocTextSnippet(data.id);
+                if (!contextText) {
+                    alert("Could not read document content. The file might be empty.");
+                    status.innerText = "Read failed";
+                    return;
+                }
+
+                status.innerText = `Generating summary...`;
+                try {
+                    // 2. Call AI
+                    const result = await window.api.processWithAI({ 
+                        fileId: data.id, 
+                        promptType: 'summarize',
+                        content: contextText // Send content
+                    });
+
+                    // 3. Show Result
+                    detailsTitle.innerText = `✨ AI Summary: ${data.name}`;
+                    const htmlContent = window.api.parseMarkdown(result.text || result.answer || "No response.");
+                    metaTable.innerHTML = `<div style="padding:20px; line-height:1.6; font-size:14px; color:#333;">${htmlContent}</div>`;
+                    
+                    if(versionsContainer) versionsContainer.style.display = 'none'; // Hide versions
+                    detailsModal.style.display = 'flex';
+                    status.innerText = "Summary ready.";
+                } catch (err) {
+                    console.error(err);
+                    status.innerText = "AI Error.";
+                    alert("AI Error: " + err.message);
+                }
+            }
+
+            // --- AI ASK (Setup) ---
+            if (action === 'ai-ask') {
+                pendingAIFile = data;
+                aiContextLabel.innerText = `Context: ${data.name}`;
+                questionInput.value = '';
+                questionModal.style.display = 'flex';
+                questionInput.focus();
+            }
+
+            // --- FILE ACTIONS ---
             if (action === 'toggle-star') {
                 status.innerText = data.addStar ? "Adding to Starred..." : "Removing from Starred...";
                 try {
                     await window.api.toggleStar({ fileId: data.id, addStar: data.addStar });
                     status.innerText = data.addStar ? "Starred!" : "Unstarred!";
-                    
-                    // If we are currently looking at the Starred list, refresh it
-                    // (You might want to track if you are in 'starred mode' vs 'folder mode')
                     if (document.getElementById('starred-btn').classList.contains('active')) {
-                         document.getElementById('starred-btn').click(); // Refresh list
+                         document.getElementById('starred-btn').click();
                     }
-                } catch (e) {
-                    status.innerText = "Action failed.";
-                }
+                } catch (e) { status.innerText = "Action failed."; }
             }
 
-            // CONTEXT MENU ACTIONS (Rename, Create, etc.)
             if (action === 'rename') {
                 pendingRename = data; 
                 modalTitle.innerText = "Rename File"; nameInput.value = data.name; createBtn.innerText = "Rename";
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
+
             if (action === 'create') {
                 pendingCreation = data; 
                 modalTitle.innerText = `Name your new ${data.type === 'folder' ? 'Folder' : 'File'}:`;
                 nameInput.value = ""; createBtn.innerText = "Create";
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
+
             if (action === 'details') {
                 if (!detailsModal) return;
                 detailsTitle.innerText = `Loading: ${data.name}...`; detailsModal.style.display = 'flex';
-                metaTable.innerHTML = ''; versionsList.innerHTML = 'Fetching versions...';
+                metaTable.innerHTML = ''; 
+                if(versionsContainer) versionsContainer.style.display = 'block';
+                versionsList.innerHTML = 'Fetching versions...';
+                
                 try {
                     const info = await window.api.getFileDetails(data.id);
                     detailsTitle.innerText = info.metadata.name;
                     const pathString = info.metadata.fullPath || '-';
                     metaTable.innerHTML = `
-                        <tr><td>Type</td><td>${info.metadata.mimeType}</td></tr>
-                        <tr><td>Size</td><td>${info.metadata.size||'-'}</td></tr>
-                        <tr><td>Location</td><td title="${pathString}">${pathString}</td></tr>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <tr><td style="padding:5px;">Type</td><td>${info.metadata.mimeType}</td></tr>
+                        <tr><td style="padding:5px;">Size</td><td>${info.metadata.size||'-'}</td></tr>
+                        <tr><td style="padding:5px;">Location</td><td title="${pathString}">${pathString}</td></tr>
+                        </table>
                     `;
                     if (info.revisions.length > 0) versionsList.innerHTML = info.revisions.map(rev => `<div>${new Date(rev.modifiedTime).toLocaleString()}</div>`).join('');
                     else versionsList.innerHTML = 'No versions.';
                 } catch (err) { versionsList.innerText = "Error."; }
             }
+
             if (action === 'edit') {
                 status.innerText = `Opening editor...`;
                 let editLink = data.link;
                 if (editLink.includes('/view')) editLink = editLink.replace(/\/view.*$/, '/edit');
                 webview.src = editLink;
             }
+
             if (action === 'copy-ref') { clipboardItem = { ...data, mode: 'shortcut' }; status.innerText = `Copied Link to "${data.name}"`; }
             if (action === 'cut-item') { clipboardItem = { ...data, mode: 'move' }; status.innerText = `Cut "${data.name}" (Ready to paste)`; }
 
@@ -395,7 +462,67 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 6. FILE TREE & SCANNER LOGIC (RESTORED)
+    // 7. AI "ASK" BUTTON HANDLER (FIXED)
+    // =========================================================================
+    
+    if (askAiBtn) {
+        askAiBtn.onclick = async () => {
+            const userQuestion = questionInput.value.trim();
+            if (!userQuestion || !pendingAIFile) return;
+
+            questionModal.style.display = 'none';
+            status.innerText = "Reading file...";
+            
+            try {
+                // 1. Fetch Content
+                const contextText = await getDocTextSnippet(pendingAIFile.id);
+                if (!contextText) {
+                    alert("Could not read file context.");
+                    status.innerText = "Ready";
+                    return;
+                }
+
+                status.innerText = "Asking AI...";
+                
+                // 2. Send to API
+                const result = await window.api.processWithAI({ 
+                    fileId: pendingAIFile.id, 
+                    promptType: 'ask', 
+                    userQuery: userQuestion,
+                    content: contextText // Include content
+                });
+
+                // 3. Display Result
+                detailsTitle.innerText = `❓ Question: ${userQuestion}`;
+                const htmlContent = window.api.parseMarkdown(result.text || result.answer);
+
+                metaTable.innerHTML = `
+                    <div style="padding:20px; font-size:14px; color:#333;">
+                        <div style="margin-bottom:10px; color:#666; font-size:12px;">Answer based on <strong>${pendingAIFile.name}</strong>:</div>
+                        <div style="line-height:1.6;">${htmlContent}</div>
+                    </div>
+                `;
+                if(versionsContainer) versionsContainer.style.display = 'none';
+                detailsModal.style.display = 'flex';
+                status.innerText = "Answer received.";
+            } catch (err) {
+                console.error(err);
+                status.innerText = "AI failed.";
+                alert("Error: " + err.message);
+            }
+        };
+    }
+
+    if (cancelQuestionBtn) {
+        cancelQuestionBtn.onclick = () => { questionModal.style.display = 'none'; pendingAIFile = null; };
+    }
+    if (questionInput) {
+        questionInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') askAiBtn.click(); });
+    }
+
+
+    // =========================================================================
+    // 8. FILE TREE & SCANNER LOGIC
     // =========================================================================
 
     // WEBVIEW HANDLERS
@@ -405,13 +532,18 @@ document.addEventListener('DOMContentLoaded', () => {
         webview.addEventListener('new-window', (e) => { e.preventDefault(); if (e.url.startsWith('http')) window.api.openExternal(e.url); });
     }
 
-    // LOAD GLOBAL TAGS
     async function loadGlobalTags() {
+        if (globalTagsContainer) globalTagsContainer.innerHTML = '<span style="color:#999; font-size:10px;">Syncing index...</span>';
+        const timeoutMs = 8000;
+        const tagPromise = window.api.getAllTags();
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Tag load timed out')), timeoutMs));
         try {
-            globalTagMap = await window.api.getAllTags();
+            globalTagMap = await Promise.race([tagPromise, timeoutPromise]);
             if(globalTagsContainer) {
                 globalTagsContainer.innerHTML = '';
-                Object.keys(globalTagMap).sort().forEach(tag => {
+                const tags = Object.keys(globalTagMap).sort();
+                if (tags.length === 0) globalTagsContainer.innerHTML = '<span style="color:#999; font-size:11px;">No tags found.</span>';
+                tags.forEach(tag => {
                     const pill = document.createElement('span');
                     pill.innerText = tag;
                     pill.style.cssText = "background:#e8eaed; color:#444; padding:2px 8px; border-radius:12px; font-size:11px; cursor:pointer; border:1px solid #dadce0;";
@@ -419,7 +551,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     globalTagsContainer.appendChild(pill);
                 });
             }
-        } catch (e) { console.error(e); }
+            if (status.innerText === "Refreshing..." || status.innerText.includes("Syncing")) status.innerText = "Tags loaded.";
+        } catch (e) { 
+            console.error("Error loading tags:", e); 
+            if (globalTagsContainer) globalTagsContainer.innerHTML = '<span style="color:red; font-size:11px;">Tag load failed.</span>';
+            status.innerText = "Tag load failed.";
+        }
     }
 
     async function filterFilesByTag(tag) {
@@ -437,6 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // SEARCH
     if (searchBox) {
+        const SEARCH_TIMEOUT_MS = 8000;
         searchBox.addEventListener('input', () => {
             if (searchTimeout) clearTimeout(searchTimeout);
             if (searchBox.value.trim().length === 0) { init(); return; }
@@ -444,7 +582,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 const query = searchBox.value.trim();
                 const isTag = query.startsWith('#');
                 status.innerText = `Searching...`;
-                const res = await window.api.searchFiles(isTag ? query.substring(1) : query, isTag || searchContentCheck.checked);
+                const searchPromise = window.api.searchFiles(isTag ? query.substring(1) : query, isTag || searchContentCheck.checked);
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Search timed out')), SEARCH_TIMEOUT_MS));
+                let res = [];
+                try {
+                    res = await Promise.race([searchPromise, timeoutPromise]);
+                } catch (err) {
+                    console.error('Search failed:', err);
+                    status.innerText = 'Search failed.';
+                    if (fileList) fileList.innerHTML = '<div style="padding:10px; color:#999;">Search failed.</div>';
+                    return;
+                }
                 fileList.innerHTML = '';
                 res.forEach(f => fileList.appendChild(createTreeItem(f)));
                 status.innerText = `Found ${res.length} results.`;
@@ -454,7 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
             searchClearBtn.onclick = () => {
                 searchBox.value = '';
                 if (searchTimeout) clearTimeout(searchTimeout);
-                init(); // refresh tree to default view
+                init(); 
                 searchBox.focus();
             };
         }
@@ -540,7 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
                     const json = JSON.stringify(payload);
                     e.dataTransfer.setData('application/json', json);
-                    e.dataTransfer.setData('text/plain', json); // Fallback for engines that ignore custom MIME only
+                    e.dataTransfer.setData('text/plain', json); 
                     e.dataTransfer.effectAllowed = 'copyMove';
                     headEl.style.opacity = '0.5';
                 });
@@ -634,14 +782,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // CREATE TREE ITEM
-function createTreeItem(file) {
-        const isRoot = file.id === 'root'; // CHECK FOR ROOT
+    function createTreeItem(file) {
+        const isRoot = file.id === 'root'; 
         const isRealFolder = file.mimeType === 'application/vnd.google-apps.folder';
         const isShortcut = file.mimeType === 'application/vnd.google-apps.shortcut';
         
         const isSectionLink = file.appProperties && file.appProperties.role === 'section_link';
 
-        let isFolder = isRealFolder || isRoot; // Root is always a folder
+        let isFolder = isRealFolder || isRoot; 
         if (isShortcut && file.shortcutDetails?.targetMimeType === 'application/vnd.google-apps.folder') isFolder = true;
         
         const node = document.createElement('div'); node.className = 'tree-node';
@@ -652,7 +800,6 @@ function createTreeItem(file) {
 
         const label = document.createElement('div'); label.className = 'tree-label'; 
         
-        // DISABLE DRAGGING FOR ROOT
         if (!isRoot) {
             label.draggable = true; 
         }
@@ -660,10 +807,9 @@ function createTreeItem(file) {
         const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.innerText = isFolder ? '▶' : '';
         
         let icon = getIcon(file.mimeType);
-        if (isRoot) icon = 'MyDrive'; // Special Icon Logic? Or just use folder
+        if (isRoot) icon = 'MyDrive'; 
         if (isSectionLink) icon = '🔖'; 
         
-        // SPECIAL ROOT STYLING
         if (isRoot) {
             label.innerHTML = `<span class="tree-icon">🏠</span><span style="font-weight:bold;">${file.name}</span>`;
         } else {
@@ -687,29 +833,23 @@ function createTreeItem(file) {
                 let deepLink = `https://docs.google.com/document/d/${srcId}/edit`;
                 if (headId) deepLink += `#heading=${headId}`;
                 webview.src = deepLink;
-                // Trigger a scan so the sidebar reflects the target doc
                 performScan(srcId, 'application/vnd.google-apps.document');
                 return;
             }
 
             if (!isFolder) { openFile(file); return; }
             
-            // FOLDER EXPANSION
             if (children.style.display === 'block') {
                 children.style.display = 'none'; arrow.innerText = '▶'; arrow.classList.remove('rotated');
             } else {
                 children.style.display = 'block'; arrow.innerText = '▼'; arrow.classList.add('rotated');
-                // FETCH CHILDREN (Lazy Load)
                 if (children.children.length === 0) {
-                    // --- FIX START ---
-                    // If this is a shortcut, list the files of the TARGET, not the shortcut itself
                     let searchId = file.id;
                     if (isShortcut && file.shortcutDetails) {
                         searchId = file.shortcutDetails.targetId;
                     }
 
                     const res = await window.api.listFiles(searchId);
-                    // --- FIX END ---
                     if (res.length === 0) children.innerHTML = '<div style="padding-left:24px; font-size:12px; color:#999;">(empty)</div>';
                     else res.forEach(child => children.appendChild(createTreeItem(child)));
                 }
@@ -724,7 +864,6 @@ function createTreeItem(file) {
             });
         });
 
-        // ONLY ALLOW DRAG START IF NOT ROOT
         if (!isRoot) {
             label.addEventListener('dragstart', (e) => {
                 e.dataTransfer.setData('application/json', JSON.stringify({
@@ -745,7 +884,6 @@ function createTreeItem(file) {
               if (!rawData) return;
               const dragData = JSON.parse(rawData);
 
-                // SCENARIO 1: HEADING -> FOLDER (Create section_link pseudo file)
                 if (dragData.type === 'section') {
                     const confirmLink = confirm(`Create a link to section "${dragData.title}" inside "${file.name}"?`);
                     if (!confirmLink) return;
@@ -766,10 +904,9 @@ function createTreeItem(file) {
                     return;
                 }
 
-                // SCENARIO 2: FILE/FOLDER -> FOLDER (Move)
                 if (dragData.id) {
-                    if (dragData.id === file.id) return; // ignore self drop
-                    if (dragData.parentId === file.id) return; // already here
+                    if (dragData.id === file.id) return; 
+                    if (dragData.parentId === file.id) return; 
 
                     const confirmMove = confirm(`Move "${dragData.name}" into "${file.name}"?`);
                     if (!confirmMove) return;
@@ -796,12 +933,10 @@ function createTreeItem(file) {
         return node;
     }
 
-    // Allow dragover on the tree container so drops are accepted in all engines
     if (fileList) {
         fileList.addEventListener('dragover', (e) => e.preventDefault());
     }
 
-    // OPEN FILE
     function openFile(file, mode = 'preview') {
         if (!file.webViewLink) return;
         let targetId = file.id; let targetMime = file.mimeType;
@@ -816,7 +951,7 @@ function createTreeItem(file) {
         performScan(targetId, targetMime);
     }
 
-    // HELPERS
+    // UTILS
     async function refreshFolder(folderId) {
         if (!folderId || folderId === 'root') { init(); return; }
         const folderNode = document.querySelector(`.tree-node[data-id="${folderId}"]`);
@@ -840,7 +975,25 @@ function createTreeItem(file) {
     }
     function loadRecents() { const data = localStorage.getItem('recentFiles'); return data ? JSON.parse(data) : []; }
     function saveRecents(files) { localStorage.setItem('recentFiles', JSON.stringify(files)); renderRecents(); }
-    function renderRecents() { /* ... */ } 
+    function renderRecents() { 
+        if(!recentList) return;
+        recentList.innerHTML = '';
+        const recents = loadRecents();
+        if(recents.length === 0) { recentSection.style.display = 'none'; return; }
+        
+        // Only show if user hasn't collapsed it (default expanded)
+        // ... (Skipped complex collapse logic for brevity, just rendering)
+        recentSection.style.display = 'block';
+        
+        recents.forEach(f => {
+            const div = document.createElement('div');
+            div.style.cssText = "padding:4px 12px; font-size:12px; color:#1967d2; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;";
+            div.innerText = f.name;
+            div.onclick = () => openFile(f);
+            recentList.appendChild(div);
+        });
+    } 
+
     function getIcon(mimeType) {
         if (mimeType === 'application/vnd.google-apps.folder') return '📁';
         if (mimeType.includes('shortcut')) return '🔗'; 
@@ -849,6 +1002,7 @@ function createTreeItem(file) {
         if (mimeType.includes('pdf')) return '📕';
         return '📄';
     }
+
     function closeModal() { if (modal) modal.style.display = 'none'; pendingCreation = null; pendingRename = null; }
     if (cancelBtn) cancelBtn.onclick = closeModal;
     if (closeDetailsBtn) closeDetailsBtn.onclick = () => { detailsModal.style.display = 'none'; };
@@ -873,19 +1027,16 @@ function createTreeItem(file) {
     if (nameInput) nameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') createBtn.click(); });
 
     // INIT
-async function init() {
+    async function init() {
       const oldBtn = document.getElementById('login-btn'); if (oldBtn) oldBtn.remove();
       renderRecents();
       try {
         status.innerText = 'Checking connection...';
-        // CHECK IF WE CAN LIST ROOT FILES TO CONFIRM AUTH
         const test = await window.api.listFiles('root');
         
         fileList.innerHTML = '';
         if (test) {
             status.innerText = 'Ready';
-            
-            // RENDER THE SINGLE ROOT NODE
             const rootNode = createTreeItem({
                 id: 'root',
                 name: 'My Drive',
@@ -893,8 +1044,6 @@ async function init() {
                 parents: [] 
             });
             fileList.appendChild(rootNode);
-            
-            // AUTO-EXPAND ROOT so user sees files immediately
             const label = rootNode.querySelector('.tree-label');
             if(label) label.click(); 
             

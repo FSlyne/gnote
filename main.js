@@ -597,7 +597,6 @@ ipcMain.on('show-context-menu', (event, { name, link, isFolder, id, parentId, cl
       });
       template.push({ label: '✏️ Rename', click: () => sendAction(event, 'rename', { id, name, parentId }) });
       template.push({ label: 'Edit in App', click: () => sendAction(event, 'edit', { id, name, link, shortcutDetails }) });
-      template.push({ label: '🌐 Open in Browser', click: () => { if (link) shell.openExternal(link); } });
       template.push({ type: 'separator' });
       
       template.push({ label: '✂️ Cut File/Folder', click: () => sendAction(event, 'cut-item', { id, name, parentId }) });

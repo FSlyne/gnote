@@ -14,20 +14,21 @@ Embedded Viewer: Opens Google Docs, Sheets, and Slides directly inside the app (
 
 Recent Files: Automatically tracks and lists the last 10 opened files for quick access.
 
-Search: Real-time search box that can query file names or perform full-text searches inside documents.
+Search: Real-time search box that can query file names or perform full-text searches inside documents; supports `#tag` shortcut searches and includes a clear (×) control that resets the tree to the default view.
 
 2. Document Intelligence (The "Scanner")
 Automatic Parsing: When you open a Google Doc, the right sidebar ("Scanner") automatically analyzes the content.
 
-Outline View: Displays a clickable table of contents based on the document's Headings.
+Outline View: Displays a clickable table of contents based on the document's Headings (Google Docs only; other MIME types are skipped with a notice).
 
-Task Extraction: Identifies and lists tasks marked with [], [ ], or TODO:.
+Task Extraction: Identifies and lists tasks marked with [], [ ], TODO:, native checkboxes, or manual strikethrough.
 
 Tag Extraction: detailed listing of all hashtags (#tag) found in the text.
 
 Metadata Extraction: Finds and lists Key::Value pairs (e.g., Status:: Done).
 
 Master Index Sync: A button to sync all found tags and tasks to a central "Master Index" Google Sheet for a global dashboard view.
+Comments: Lists document comments; provides a manual sync button to push findings.
 
 3. File Management
 Drag & Drop Moving: Move files into folders by dragging them in the tree view.
@@ -48,6 +49,8 @@ Context Menu: Right-click any file/folder to:
 
 ℹ️ View File Details (Metadata & Version History)
 
+Location Path: Details modal shows the full Drive path (Location) alongside type, size, and recent revisions.
+
 Creation Modal: A unified interface to create new files, folders, or web links.
 
 4. Advanced "Pseudo-File" System
@@ -56,13 +59,15 @@ This feature turns your Drive into a universal dashboard by allowing you to crea
 Web Links (Universal Portals): Create "files" that are actually links to external services (Dropbox, Trello, GitHub, Zotero, etc.). The app automatically assigns specific icons (📦, 📰, 🐙) based on the URL.
 
 Section Links (Deep Linking): Drag a Heading from the right sidebar scanner onto a Folder in the left sidebar to create a "bookmark file." Clicking this file opens the original document and scrolls directly to that specific chapter.
+These are zero-byte drive-sdk pseudo-files that store source file and heading metadata, so they behave like jump links inside the tree.
 
 5. Dashboards & Tools
 Graph View: A visual network diagram showing how your files are connected via shared #tags.
+Nodes are clickable to open docs, powered by vis-network (must be present in the environment).
 
-"Today" Button: One-click feature that finds or creates a Google Doc for the current date inside a "Daily" folder (Journaling feature).
+"Today" Button: One-click feature that finds or creates a Google Doc for the current date inside a "Daily" folder (Journaling feature, copies a template if present, otherwise creates blank).
 
-Task Dashboard: A table view overlay aggregating all tasks and tags synced to your Master Index.
+Task Dashboard: A table view overlay aggregating all tasks and tags synced to your Master Index, with status filter (All/Open/Closed), sort options (Newest/Oldest/Recently Closed), task counts, zebra rows, and "Jump" links into the source doc/heading.
 
 6. Technical & Security Features
 External Link Interception: Links clicked inside a Google Doc (or Pseudo-files) automatically open in your default OS browser (Chrome/Edge/Safari) instead of getting stuck inside the app.

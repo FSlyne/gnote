@@ -99,7 +99,10 @@
     </div>
     
     <div style="padding: 10px; border-bottom: 1px solid #dadce0;">
-        <input type="text" id="search-box" placeholder="🔍 Search Drive..." style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #dadce0; border-radius: 4px; background: #fff;">
+        <div style="position: relative;">
+            <input type="text" id="search-box" placeholder="🔍 Search Drive..." style="width: 100%; padding: 8px 28px 8px 8px; box-sizing: border-box; border: 1px solid #dadce0; border-radius: 4px; background: #fff;">
+            <button id="search-clear-btn" title="Clear search" style="position:absolute; right:6px; top:50%; transform: translateY(-50%); border:none; background:transparent; color:#5f6368; cursor:pointer; font-size:14px; line-height:1; padding:2px;">×</button>
+        </div>
         <div style="margin-top: 8px; display: flex; align-items: center;">
             <input type="checkbox" id="search-content-check" style="margin: 0 6px 0 2px;">
             <label for="search-content-check" style="font-size: 12px; color: #5f6368; cursor: pointer;">Search inside files</label>

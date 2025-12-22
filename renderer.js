@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const recentArrow = document.getElementById('recent-arrow');
     const searchBox = document.getElementById('search-box');
     const searchContentCheck = document.getElementById('search-content-check');
+    const searchClearBtn = document.getElementById('search-clear-btn');
     const tagFilter = document.getElementById('tag-filter');
     const dailyBtn = document.getElementById('daily-btn');         
     const dashboardBtn = document.getElementById('dashboard-btn'); 
@@ -352,7 +353,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     const info = await window.api.getFileDetails(data.id);
                     detailsTitle.innerText = info.metadata.name;
-                    metaTable.innerHTML = `<tr><td>Type</td><td>${info.metadata.mimeType}</td></tr><tr><td>Size</td><td>${info.metadata.size||'-'}</td></tr>`;
+                    const pathString = info.metadata.fullPath || '-';
+                    metaTable.innerHTML = `
+                        <tr><td>Type</td><td>${info.metadata.mimeType}</td></tr>
+                        <tr><td>Size</td><td>${info.metadata.size||'-'}</td></tr>
+                        <tr><td>Location</td><td title="${pathString}">${pathString}</td></tr>
+                    `;
                     if (info.revisions.length > 0) versionsList.innerHTML = info.revisions.map(rev => `<div>${new Date(rev.modifiedTime).toLocaleString()}</div>`).join('');
                     else versionsList.innerHTML = 'No versions.';
                 } catch (err) { versionsList.innerText = "Error."; }
@@ -444,6 +450,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 status.innerText = `Found ${res.length} results.`;
             }, 500);
         });
+        if (searchClearBtn) {
+            searchClearBtn.onclick = () => {
+                searchBox.value = '';
+                if (searchTimeout) clearTimeout(searchTimeout);
+                init(); // refresh tree to default view
+                searchBox.focus();
+            };
+        }
     }
 
     // SCANNER LOGIC
@@ -521,10 +535,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const headEl = document.createElement('div');
                 headEl.draggable = true;
                 headEl.addEventListener('dragstart', (e) => {
-                    e.dataTransfer.setData('application/json', JSON.stringify({
+                    const payload = {
                         type: 'section', sourceFileId: fileId, headerId: thisHeaderId, title: fullText    
-                    }));
-                    e.dataTransfer.effectAllowed = 'all'; 
+                    };
+                    const json = JSON.stringify(payload);
+                    e.dataTransfer.setData('application/json', json);
+                    e.dataTransfer.setData('text/plain', json); // Fallback for engines that ignore custom MIME only
+                    e.dataTransfer.effectAllowed = 'copyMove';
                     headEl.style.opacity = '0.5';
                 });
                 headEl.addEventListener('dragend', () => headEl.style.opacity = '1');
@@ -662,7 +679,18 @@ function createTreeItem(file) {
             document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
             label.classList.add('selected');
             
-            if (isSectionLink) { /* ... keep section link logic ... */ return; }
+            if (isSectionLink) {
+                const srcId = file.appProperties.sourceFileId;
+                const headId = file.appProperties.headerId;
+                if (!srcId) return;
+                status.innerText = `Jumping to section in "${file.name}"...`;
+                let deepLink = `https://docs.google.com/document/d/${srcId}/edit`;
+                if (headId) deepLink += `#heading=${headId}`;
+                webview.src = deepLink;
+                // Trigger a scan so the sidebar reflects the target doc
+                performScan(srcId, 'application/vnd.google-apps.document');
+                return;
+            }
 
             if (!isFolder) { openFile(file); return; }
             
@@ -713,19 +741,64 @@ function createTreeItem(file) {
             label.addEventListener('dragleave', () => label.classList.remove('drag-over'));
             label.addEventListener('drop', async (e) => {
                 e.preventDefault(); e.stopPropagation(); label.classList.remove('drag-over');
-                const rawData = e.dataTransfer.getData('application/json');
-                if (!rawData) return;
-                const dragData = JSON.parse(rawData);
+              const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+              if (!rawData) return;
+              const dragData = JSON.parse(rawData);
 
-                // ... (Keep existing Drop Logic for Links and Moves) ...
-                if (dragData.type === 'section') { /* ... */ } 
-                if (dragData.id && dragData.id !== file.id) { /* ... */ }
-                
-                // Note: Ensure you include the full drop logic from previous steps here
-                // I am omitting it for brevity but it is identical to previous logic
+                // SCENARIO 1: HEADING -> FOLDER (Create section_link pseudo file)
+                if (dragData.type === 'section') {
+                    const confirmLink = confirm(`Create a link to section "${dragData.title}" inside "${file.name}"?`);
+                    if (!confirmLink) return;
+                    status.innerText = `Linking "${dragData.title}"...`;
+                    try {
+                        await window.api.createSectionLink({
+                            parentId: file.id,
+                            name: dragData.title,
+                            sourceFileId: dragData.sourceFileId,
+                            headerId: dragData.headerId
+                        });
+                        status.innerText = "Link created!";
+                        refreshFolder(file.id);
+                    } catch (err) {
+                        console.error(err);
+                        status.innerText = "Creation failed.";
+                    }
+                    return;
+                }
+
+                // SCENARIO 2: FILE/FOLDER -> FOLDER (Move)
+                if (dragData.id) {
+                    if (dragData.id === file.id) return; // ignore self drop
+                    if (dragData.parentId === file.id) return; // already here
+
+                    const confirmMove = confirm(`Move "${dragData.name}" into "${file.name}"?`);
+                    if (!confirmMove) return;
+
+                    status.innerText = `Moving "${dragData.name}"...`;
+                    try {
+                        await window.api.moveFile({
+                            fileId: dragData.id,
+                            oldParentId: dragData.parentId || 'root',
+                            newParentId: file.id
+                        });
+                        status.innerText = "Move successful!";
+                        refreshFolder(file.id);
+                        if (dragData.parentId && dragData.parentId !== file.id) {
+                            refreshFolder(dragData.parentId);
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        status.innerText = "Move failed.";
+                    }
+                }
             });
         }
         return node;
+    }
+
+    // Allow dragover on the tree container so drops are accepted in all engines
+    if (fileList) {
+        fileList.addEventListener('dragover', (e) => e.preventDefault());
     }
 
     // OPEN FILE

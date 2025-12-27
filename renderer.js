@@ -7,7 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('window.api is undefined; preload may have failed to load.');
         return;
     }
-    
+
     // =========================================================================
     // 1. DOM ELEMENTS
     // =========================================================================
@@ -16,9 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const status = document.getElementById('status');
 
     // PANES
-    const scannerPane = document.getElementById('scanner-pane'); 
+    const scannerPane = document.getElementById('scanner-pane');
     const dragHandle = document.getElementById('drag-handle');
-    const togglePaneBtn = document.getElementById('toggle-pane-btn'); 
+    const togglePaneBtn = document.getElementById('toggle-pane-btn');
 
     // TOOLS
     const fileList = document.getElementById('file-list');
@@ -30,10 +30,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchContentCheck = document.getElementById('search-content-check');
     const searchClearBtn = document.getElementById('search-clear-btn');
     const tagFilter = document.getElementById('tag-filter');
-    const dailyBtn = document.getElementById('daily-btn');         
-    const dashboardBtn = document.getElementById('dashboard-btn'); 
+    const dailyBtn = document.getElementById('daily-btn');
+    const dashboardBtn = document.getElementById('dashboard-btn');
     const starredBtn = document.getElementById('starred-btn');
-    
+    const loginBtn = document.getElementById('login-btn');
+
     // CONTENT
     const localTagsSection = document.getElementById('local-tags-section');
     const localTagsContainer = document.getElementById('local-tags-container');
@@ -74,13 +75,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let searchTimeout = null;
     let pendingCreation = null;
     let pendingRename = null;
-    let pendingAIFile = null; 
+    let pendingAIFile = null;
     let isResizing = false;
-    let clipboardItem = null; 
+    let clipboardItem = null;
     let currentFileId = null;
     let currentFileName = null;
     let currentScanItems = [];
-    let globalTagMap = {}; 
+    let globalTagMap = {};
     const MAX_RECENT = 10;
 
     // =========================================================================
@@ -93,10 +94,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await window.api.scanContent(fileId);
             if (!res || !res.doc || !res.doc.body || !res.doc.body.content) return null;
-            
+
             const chunks = [];
             let length = 0;
-            
+
             const addText = (text) => {
                 if (!text) return;
                 if (length >= limit) return;
@@ -106,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     length += slice.length;
                 }
             };
-            
+
             const walk = (contentList) => {
                 contentList.forEach(el => {
                     if (el.paragraph && el.paragraph.elements) {
@@ -119,9 +120,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             };
-            
+
             walk(res.doc.body.content);
-            return chunks.join('\n\n'); 
+            return chunks.join('\n\n');
         } catch (e) {
             console.warn('Doc snippet extraction failed:', e);
             return null;
@@ -137,16 +138,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const isHidden = scannerPane.style.display === 'none';
         scannerPane.style.display = isHidden ? 'flex' : 'none';
         if (dragHandle) dragHandle.style.display = isHidden ? 'block' : 'none';
-        if (togglePaneBtn) togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫'; 
+        if (togglePaneBtn) togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫';
     }
 
     async function openDashboard() {
         if (!dashboardView) return;
         dashboardView.style.display = 'flex';
         dashboardTable.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center;">Loading tasks...</td></tr>';
-        
+
         const allItems = await window.api.getAllItems();
-        
+
         // Render Dashboard Logic
         let filterContainer = document.getElementById('dash-filter-container');
         if (!filterContainer) {
@@ -175,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
         function renderDashboard() {
             const statusFilter = document.getElementById('dash-status-filter').value;
             const sortFilter = document.getElementById('dash-sort-filter').value;
-            
+
             let filtered = allItems.filter(item => {
                 if (statusFilter === 'All') return true;
                 return item.status === statusFilter;
@@ -198,11 +199,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             filtered.forEach(item => {
                 const tr = document.createElement('tr');
-                tr.style.cssText = "background: white;"; 
+                tr.style.cssText = "background: white;";
                 if (dashboardTable.children.length % 2 === 0) tr.style.background = "#fcfcfc";
                 let statusColor = '#d93025'; let statusBg = '#fce8e6';
                 if (item.status === 'Closed') { statusColor = '#188038'; statusBg = '#e6f4ea'; }
-                
+
                 tr.innerHTML = `
                     <td style="padding:4px 8px;">
                         <span style="background:${statusBg}; color:${statusColor}; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block; width:45px; text-align:center;">
@@ -233,7 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const file = await window.api.openDailyDiary();
             if (file) {
                 status.innerText = `Opened Diary: ${file.name}`;
-                openFile(file, 'edit'); 
+                openFile(file, 'edit');
             }
         } catch (err) {
             console.error(err);
@@ -242,14 +243,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showGraph() {
-        if(!graphView) return;
+        if (!graphView) return;
         graphView.style.display = 'block';
         const nodes = []; const edges = []; const processedFiles = new Set();
         Object.keys(globalTagMap).forEach((tag) => {
             nodes.push({ id: tag, label: tag, color: '#34a853', shape: 'hexagon', size: 20, font: { color: 'white' } });
             globalTagMap[tag].forEach(fileId => {
                 if (!processedFiles.has(fileId)) {
-                    nodes.push({ id: fileId, label: 'File ' + fileId.substr(0,4), color: '#4285f4', shape: 'dot', size: 10 });
+                    nodes.push({ id: fileId, label: 'File ' + fileId.substr(0, 4), color: '#4285f4', shape: 'dot', size: 10 });
                     processedFiles.add(fileId);
                 }
                 edges.push({ from: fileId, to: tag });
@@ -257,10 +258,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         const data = { nodes, edges };
         const options = { nodes: { borderWidth: 2 }, interaction: { hover: true }, physics: { stabilization: false, barnesHut: { gravitationalConstant: -3000 } } };
-        
+
         if (window.vis) {
-             const network = new window.vis.Network(networkContainer, data, options);
-             network.on("click", function (params) {
+            const network = new window.vis.Network(networkContainer, data, options);
+            network.on("click", function (params) {
                 if (params.nodes.length > 0) {
                     const nodeId = params.nodes[0];
                     if (!nodeId.startsWith('#')) {
@@ -281,10 +282,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dailyBtn) dailyBtn.onclick = openToday;
     if (closeDashBtn) closeDashBtn.onclick = () => dashboardView.style.display = 'none';
     if (closeGraphBtn) closeGraphBtn.onclick = () => graphView.style.display = 'none';
+    if (loginBtn) {
+        loginBtn.onclick = async () => {
+            status.innerText = "Launching Google Login...";
+            console.log("Renderer: Requesting openWebLogin...");
+            try {
+                const result = await window.api.openWebLogin();
+                if (result && result.success) {
+                    status.innerText = "Please check your browser to login.";
+                } else {
+                    const errorMsg = result.error || "Unknown error";
+                    status.innerText = "Login failed: " + errorMsg;
+                    if (errorMsg.includes('Port 10000')) {
+                        alert("Login Error: Port 10000 is busy.\n\nRunning multiple copies of GNote?\nPlease close them and try again.");
+                    } else {
+                        alert("Login Error: " + errorMsg);
+                    }
+                }
+            } catch (err) {
+                status.innerText = "IPC Error: " + err.message;
+                alert("IPC Error: " + err.message);
+            }
+        };
+    }
 
     if (starredBtn) {
         starredBtn.onclick = async () => {
-            starredBtn.classList.add('active'); 
+            starredBtn.classList.add('active');
             status.innerText = "Loading Starred files...";
             fileList.innerHTML = '<div style="padding:10px; color:#666; font-size:12px;">Fetching starred items...</div>';
             try {
@@ -319,7 +343,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isResizing) {
                 isResizing = false; dragHandle.classList.remove('active');
                 if (webview) webview.style.pointerEvents = 'auto';
-                document.body.style.userSelect = ''; document.body.style.cursor = '';     
+                document.body.style.userSelect = ''; document.body.style.cursor = '';
             }
         });
     }
@@ -330,7 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (window.api.onMenuAction) {
         window.api.onMenuAction(async ({ action, data }) => {
-            
+
             // --- GLOBAL COMMANDS ---
             if (action === 'toggle-dashboard') openDashboard();
             if (action === 'toggle-scanner') toggleScanner();
@@ -339,30 +363,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- AI SUMMARIZE ---
             if (action === 'ai-summarize') {
-                status.innerText = `Reading ${data.name}...`;
-                // 1. Get Text
-                const contextText = await getDocTextSnippet(data.id);
-                if (!contextText) {
-                    alert("Could not read document content. The file might be empty.");
-                    status.innerText = "Read failed";
-                    return;
-                }
+                status.innerText = `Analyzing ${data.name}...`;
 
-                status.innerText = `Generating summary...`;
                 try {
-                    // 2. Call AI
-                    const result = await window.api.processWithAI({ 
-                        fileId: data.id, 
-                        promptType: 'summarize',
-                        content: contextText // Send content
+                    // Call AI (Backend handles fetching)
+                    const result = await window.api.processWithAI({
+                        fileId: data.id,
+                        promptType: 'summarize'
                     });
 
-                    // 3. Show Result
+                    if (result.error === 'QUOTA_EXCEEDED') {
+                        const msg = `Quota Limit Reached. Please wait ${result.retryDelay}s.`;
+                        status.innerText = msg;
+                        alert(msg + "\n\n(You are on the free tier of the Gemini API)");
+                        return;
+                    }
+
+                    if (result.error) throw new Error(result.error);
+
+                    // Show Result
                     detailsTitle.innerText = `✨ AI Summary: ${data.name}`;
-                    const htmlContent = window.api.parseMarkdown(result.text || result.answer || "No response.");
+                    const htmlContent = window.api.parseMarkdown(result.text || "No response.");
                     metaTable.innerHTML = `<div style="padding:20px; line-height:1.6; font-size:14px; color:#333;">${htmlContent}</div>`;
-                    
-                    if(versionsContainer) versionsContainer.style.display = 'none'; // Hide versions
+
+                    if (versionsContainer) versionsContainer.style.display = 'none'; // Hide versions
                     detailsModal.style.display = 'flex';
                     status.innerText = "Summary ready.";
                 } catch (err) {
@@ -388,19 +412,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     await window.api.toggleStar({ fileId: data.id, addStar: data.addStar });
                     status.innerText = data.addStar ? "Starred!" : "Unstarred!";
                     if (document.getElementById('starred-btn').classList.contains('active')) {
-                         document.getElementById('starred-btn').click();
+                        document.getElementById('starred-btn').click();
                     }
                 } catch (e) { status.innerText = "Action failed."; }
             }
 
             if (action === 'rename') {
-                pendingRename = data; 
+                pendingRename = data;
                 modalTitle.innerText = "Rename File"; nameInput.value = data.name; createBtn.innerText = "Rename";
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
 
             if (action === 'create') {
-                pendingCreation = data; 
+                pendingCreation = data;
                 modalTitle.innerText = `Name your new ${data.type === 'folder' ? 'Folder' : 'File'}:`;
                 nameInput.value = ""; createBtn.innerText = "Create";
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
@@ -409,10 +433,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (action === 'details') {
                 if (!detailsModal) return;
                 detailsTitle.innerText = `Loading: ${data.name}...`; detailsModal.style.display = 'flex';
-                metaTable.innerHTML = ''; 
-                if(versionsContainer) versionsContainer.style.display = 'block';
+                metaTable.innerHTML = '';
+                if (versionsContainer) versionsContainer.style.display = 'block';
                 versionsList.innerHTML = 'Fetching versions...';
-                
+
                 try {
                     const info = await window.api.getFileDetails(data.id);
                     detailsTitle.innerText = info.metadata.name;
@@ -420,7 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     metaTable.innerHTML = `
                         <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                         <tr><td style="padding:5px;">Type</td><td>${info.metadata.mimeType}</td></tr>
-                        <tr><td style="padding:5px;">Size</td><td>${info.metadata.size||'-'}</td></tr>
+                        <tr><td style="padding:5px;">Size</td><td>${info.metadata.size || '-'}</td></tr>
                         <tr><td style="padding:5px;">Location</td><td title="${pathString}">${pathString}</td></tr>
                         </table>
                     `;
@@ -440,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (action === 'cut-item') { clipboardItem = { ...data, mode: 'move' }; status.innerText = `Cut "${data.name}" (Ready to paste)`; }
 
             if (action === 'paste-item' && clipboardItem) {
-                const destId = data.parentId; 
+                const destId = data.parentId;
                 if (clipboardItem.mode === 'shortcut') {
                     status.innerText = `Creating shortcut...`;
                     await window.api.createShortcut({ targetId: clipboardItem.id, parentId: destId, name: clipboardItem.name });
@@ -452,9 +476,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const oldParent = clipboardItem.parentId;
                         await window.api.moveFile({ fileId: clipboardItem.id, oldParentId: oldParent, newParentId: destId });
                         status.innerText = "Move successful!";
-                        refreshFolder(destId); 
+                        refreshFolder(destId);
                         if (oldParent !== destId) refreshFolder(oldParent);
-                        clipboardItem = null; 
+                        clipboardItem = null;
                     } catch (e) { status.innerText = "Move failed."; alert("Error moving item."); }
                 }
             }
@@ -464,45 +488,36 @@ document.addEventListener('DOMContentLoaded', () => {
     // =========================================================================
     // 7. AI "ASK" BUTTON HANDLER (FIXED)
     // =========================================================================
-    
+
     if (askAiBtn) {
         askAiBtn.onclick = async () => {
             const userQuestion = questionInput.value.trim();
             if (!userQuestion || !pendingAIFile) return;
 
             questionModal.style.display = 'none';
-            status.innerText = "Reading file...";
-            
-            try {
-                // 1. Fetch Content
-                const contextText = await getDocTextSnippet(pendingAIFile.id);
-                if (!contextText) {
-                    alert("Could not read file context.");
-                    status.innerText = "Ready";
-                    return;
-                }
+            status.innerText = "Thinking...";
 
-                status.innerText = "Asking AI...";
-                
-                // 2. Send to API
-                const result = await window.api.processWithAI({ 
-                    fileId: pendingAIFile.id, 
-                    promptType: 'ask', 
-                    userQuery: userQuestion,
-                    content: contextText // Include content
+            try {
+                // Send to API (Backend handles fetching)
+                const result = await window.api.processWithAI({
+                    fileId: pendingAIFile.id,
+                    promptType: 'ask',
+                    userQuery: userQuestion
                 });
 
-                // 3. Display Result
+                if (result.error) throw new Error(result.error);
+
+                // Display Result
                 detailsTitle.innerText = `❓ Question: ${userQuestion}`;
-                const htmlContent = window.api.parseMarkdown(result.text || result.answer);
+                const htmlContent = window.api.parseMarkdown(result.text || "No response.");
 
                 metaTable.innerHTML = `
-                    <div style="padding:20px; font-size:14px; color:#333;">
-                        <div style="margin-bottom:10px; color:#666; font-size:12px;">Answer based on <strong>${pendingAIFile.name}</strong>:</div>
-                        <div style="line-height:1.6;">${htmlContent}</div>
-                    </div>
-                `;
-                if(versionsContainer) versionsContainer.style.display = 'none';
+                        <div style="padding:20px; font-size:14px; color:#333;">
+                            <div style="margin-bottom:10px; color:#666; font-size:12px;">Answer based on <strong>${pendingAIFile.name}</strong>:</div>
+                            <div style="line-height:1.6;">${htmlContent}</div>
+                        </div>
+                    `;
+                if (versionsContainer) versionsContainer.style.display = 'none';
                 detailsModal.style.display = 'flex';
                 status.innerText = "Answer received.";
             } catch (err) {
@@ -539,7 +554,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Tag load timed out')), timeoutMs));
         try {
             globalTagMap = await Promise.race([tagPromise, timeoutPromise]);
-            if(globalTagsContainer) {
+            if (globalTagsContainer) {
                 globalTagsContainer.innerHTML = '';
                 const tags = Object.keys(globalTagMap).sort();
                 if (tags.length === 0) globalTagsContainer.innerHTML = '<span style="color:#999; font-size:11px;">No tags found.</span>';
@@ -552,8 +567,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
             if (status.innerText === "Refreshing..." || status.innerText.includes("Syncing")) status.innerText = "Tags loaded.";
-        } catch (e) { 
-            console.error("Error loading tags:", e); 
+        } catch (e) {
+            console.error("Error loading tags:", e);
             if (globalTagsContainer) globalTagsContainer.innerHTML = '<span style="color:red; font-size:11px;">Tag load failed.</span>';
             status.innerText = "Tag load failed.";
         }
@@ -566,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const fileIds = globalTagMap[tag];
         const files = await window.api.getFilesByIds(fileIds);
         fileList.innerHTML = '';
-        if (files.length === 0) { fileList.innerHTML = '<div style="padding:10px; color:#999;">Files not found.</div>'; } 
+        if (files.length === 0) { fileList.innerHTML = '<div style="padding:10px; color:#999;">Files not found.</div>'; }
         else { files.forEach(f => fileList.appendChild(createTreeItem(f))); }
         status.innerText = `Found ${files.length} files`;
     }
@@ -602,7 +617,7 @@ document.addEventListener('DOMContentLoaded', () => {
             searchClearBtn.onclick = () => {
                 searchBox.value = '';
                 if (searchTimeout) clearTimeout(searchTimeout);
-                init(); 
+                init();
                 searchBox.focus();
             };
         }
@@ -659,18 +674,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const style = paragraph.paragraphStyle?.namedStyleType;
             const textElements = paragraph.elements;
             let fullText = '';
-            let isVisuallyStruck = false; 
+            let isVisuallyStruck = false;
 
             textElements.forEach(e => {
-                if(e.textRun) {
+                if (e.textRun) {
                     fullText += e.textRun.content;
-                    if(e.textRun.textStyle?.strikethrough) isVisuallyStruck = true;
+                    if (e.textRun.textStyle?.strikethrough) isVisuallyStruck = true;
                 }
             });
             fullText = fullText.trim();
             if (!fullText) return;
 
-            const textCheckedMatch = fullText.match(/^\[\s*[xX]\s*\]/); 
+            const textCheckedMatch = fullText.match(/^\[\s*[xX]\s*\]/);
             const textUncheckedMatch = fullText.match(/^\[\s*\]/);
             const todoMatch = fullText.match(/^todo:/i);
             const isNative = isNativeCheckbox(paragraph);
@@ -679,31 +694,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 itemsFound++;
                 const thisHeaderId = paragraph.paragraphStyle.headingId || '';
                 currentSection = { title: fullText, id: thisHeaderId };
-                
+
                 const headEl = document.createElement('div');
                 headEl.draggable = true;
                 headEl.addEventListener('dragstart', (e) => {
                     const payload = {
-                        type: 'section', sourceFileId: fileId, headerId: thisHeaderId, title: fullText    
+                        type: 'section', sourceFileId: fileId, headerId: thisHeaderId, title: fullText
                     };
                     const json = JSON.stringify(payload);
                     e.dataTransfer.setData('application/json', json);
-                    e.dataTransfer.setData('text/plain', json); 
+                    e.dataTransfer.setData('text/plain', json);
                     e.dataTransfer.effectAllowed = 'copyMove';
                     headEl.style.opacity = '0.5';
                 });
                 headEl.addEventListener('dragend', () => headEl.style.opacity = '1');
                 headEl.style.cssText = "padding: 8px 15px; background: #e8f0fe; font-weight:bold; font-size:12px; color:#1967d2; border-top:1px solid #eee; margin-top:5px; cursor:pointer;";
                 headEl.innerText = fullText;
-                if(thisHeaderId) headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${thisHeaderId}`;
+                if (thisHeaderId) headEl.onclick = () => webview.src = `https://docs.google.com/document/d/${fileId}/edit#heading=${thisHeaderId}`;
                 docStructure.appendChild(headEl);
-            } 
+            }
             else if (isNative || textCheckedMatch || textUncheckedMatch || todoMatch) {
                 itemsFound++;
                 let cleanText = fullText.replace(/^\[\s*[xX]\s*\]/, '').replace(/^\[\s*\]/, '').replace(/^todo:/i, '').trim();
                 const isDone = textCheckedMatch || isVisuallyStruck;
-                
-                const statusIcon = isDone ? 'VX' : '☐'; 
+
+                const statusIcon = isDone ? 'VX' : '☐';
                 const statusColor = isDone ? '#34a853' : '#ea4335';
                 const textStyle = isDone ? 'text-decoration: line-through; color: #888;' : '';
 
@@ -736,27 +751,27 @@ document.addEventListener('DOMContentLoaded', () => {
         if (doc.body && doc.body.content) scanContentList(doc.body.content);
         if (doc.headers) Object.values(doc.headers).forEach(h => scanContentList(h.content));
         if (doc.footers) Object.values(doc.footers).forEach(f => scanContentList(f.content));
-        
+
         if (comments && comments.length > 0) {
             const sep = document.createElement('div');
             sep.innerHTML = '<strong>💬 Comments</strong>';
             sep.style.cssText = "padding:8px 15px; background:#f1f3f4; font-size:11px; color:#5f6368; border-top:1px solid #ddd;";
             docStructure.appendChild(sep);
             comments.forEach(c => {
-                 let text = c.content.trim();
-                 if (!text) return;
-                 if (text.toLowerCase().includes('todo:')) {
-                     itemsFound++;
-                     const clean = text.replace(/todo:/i, '').trim();
-                     currentScanItems.push({ type: 'Task', text: `${clean} (Comment by ${c.author.displayName})`, headerId: '' });
-                     const el = document.createElement('div');
-                     el.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; color:#ea4335;";
-                     el.innerHTML = `☐ ${clean} <em style="color:#999; font-size:10px;">- ${c.author.displayName}</em>`;
-                     docStructure.appendChild(el);
-                 }
+                let text = c.content.trim();
+                if (!text) return;
+                if (text.toLowerCase().includes('todo:')) {
+                    itemsFound++;
+                    const clean = text.replace(/todo:/i, '').trim();
+                    currentScanItems.push({ type: 'Task', text: `${clean} (Comment by ${c.author.displayName})`, headerId: '' });
+                    const el = document.createElement('div');
+                    el.style.cssText = "padding: 6px 15px; font-size:12px; border-bottom:1px solid #f0f0f0; color:#ea4335;";
+                    el.innerHTML = `☐ ${clean} <em style="color:#999; font-size:10px;">- ${c.author.displayName}</em>`;
+                    docStructure.appendChild(el);
+                }
             });
         }
-        
+
         if (uniqueLocalTags.size > 0) {
             localTagsSection.style.display = 'block';
             uniqueLocalTags.forEach(tag => {
@@ -783,40 +798,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // CREATE TREE ITEM
     function createTreeItem(file) {
-        const isRoot = file.id === 'root'; 
+        const isRoot = file.id === 'root';
         const isRealFolder = file.mimeType === 'application/vnd.google-apps.folder';
         const isShortcut = file.mimeType === 'application/vnd.google-apps.shortcut';
-        
+
         const isSectionLink = file.appProperties && file.appProperties.role === 'section_link';
 
-        let isFolder = isRealFolder || isRoot; 
+        let isFolder = isRealFolder || isRoot;
         if (isShortcut && file.shortcutDetails?.targetMimeType === 'application/vnd.google-apps.folder') isFolder = true;
-        
+
         const node = document.createElement('div'); node.className = 'tree-node';
-        node.dataset.id = file.id; 
-        
+        node.dataset.id = file.id;
+
         const currentParentId = (file.parents && file.parents.length > 0) ? file.parents[0] : 'root';
         node.dataset.parentId = currentParentId;
 
-        const label = document.createElement('div'); label.className = 'tree-label'; 
-        
+        const label = document.createElement('div'); label.className = 'tree-label';
+
         if (!isRoot) {
-            label.draggable = true; 
+            label.draggable = true;
         }
-        
+
         const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.innerText = isFolder ? '▶' : '';
-        
+
         let icon = getIcon(file.mimeType);
-        if (isRoot) icon = 'MyDrive'; 
-        if (isSectionLink) icon = '🔖'; 
-        
+        if (isRoot) icon = 'MyDrive';
+        if (isSectionLink) icon = '🔖';
+
         if (isRoot) {
             label.innerHTML = `<span class="tree-icon">🏠</span><span style="font-weight:bold;">${file.name}</span>`;
         } else {
             label.innerHTML = `<span class="tree-icon">${icon}</span><span>${file.name}</span>`;
         }
         label.prepend(arrow);
-        
+
         const children = document.createElement('div'); children.className = 'tree-children';
         node.appendChild(label); node.appendChild(children);
 
@@ -824,7 +839,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.stopPropagation();
             document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
             label.classList.add('selected');
-            
+
             if (isSectionLink) {
                 const srcId = file.appProperties.sourceFileId;
                 const headId = file.appProperties.headerId;
@@ -837,8 +852,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (!isFolder) { openFile(file); return; }
-            
+            if (!isFolder) { openFile(file, 'preview', false); return; }
+
             if (children.style.display === 'block') {
                 children.style.display = 'none'; arrow.innerText = '▶'; arrow.classList.remove('rotated');
             } else {
@@ -858,8 +873,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         label.addEventListener('contextmenu', (e) => {
             e.preventDefault();
-            window.api.showContextMenu({ 
-                name: file.name, link: file.webViewLink, isFolder: isFolder, 
+            window.api.showContextMenu({
+                name: file.name, link: file.webViewLink, isFolder: isFolder,
                 id: file.id, parentId: currentParentId, clipboardItem: clipboardItem, shortcutDetails: file.shortcutDetails
             });
         });
@@ -880,9 +895,9 @@ document.addEventListener('DOMContentLoaded', () => {
             label.addEventListener('dragleave', () => label.classList.remove('drag-over'));
             label.addEventListener('drop', async (e) => {
                 e.preventDefault(); e.stopPropagation(); label.classList.remove('drag-over');
-              const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
-              if (!rawData) return;
-              const dragData = JSON.parse(rawData);
+                const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+                if (!rawData) return;
+                const dragData = JSON.parse(rawData);
 
                 if (dragData.type === 'section') {
                     const confirmLink = confirm(`Create a link to section "${dragData.title}" inside "${file.name}"?`);
@@ -905,8 +920,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 if (dragData.id) {
-                    if (dragData.id === file.id) return; 
-                    if (dragData.parentId === file.id) return; 
+                    if (dragData.id === file.id) return;
+                    if (dragData.parentId === file.id) return;
 
                     const confirmMove = confirm(`Move "${dragData.name}" into "${file.name}"?`);
                     if (!confirmMove) return;
@@ -937,25 +952,78 @@ document.addEventListener('DOMContentLoaded', () => {
         fileList.addEventListener('dragover', (e) => e.preventDefault());
     }
 
-    function openFile(file, mode = 'preview') {
+    async function revealInTree(file) {
+        // 1. Get full path IDs
+        try {
+            const details = await window.api.getFileDetails(file.id);
+            if (!details || !details.metadata.pathIds) return;
+
+            const pathIds = details.metadata.pathIds;
+
+            // 2. Reset Search if needed
+            if (searchBox.value.trim() !== '') {
+                searchBox.value = '';
+                await init(); // Restore root tree
+            }
+
+            // 3. Traverse and Expand
+            // Start from root (index 0) down to parent
+            for (const parentId of pathIds) {
+                if (parentId === 'root') continue; // Root is always open
+
+                const parentNode = document.querySelector(`.tree-node[data-id="${parentId}"]`);
+                if (parentNode) {
+                    const children = parentNode.querySelector('.tree-children');
+                    const arrow = parentNode.querySelector('.tree-arrow');
+
+                    // If collapsed or empty, expand/refresh
+                    if (children.style.display !== 'block' || children.children.length === 0) {
+                        children.style.display = 'block';
+                        arrow.innerText = '▼'; arrow.classList.add('rotated');
+                        // Only refresh if empty (lazy load)
+                        if (children.children.length === 0) {
+                            await refreshFolder(parentId);
+                        }
+                    }
+                }
+            }
+
+            // 4. Highlight File
+            setTimeout(() => {
+                const targetNode = document.querySelector(`.tree-node[data-id="${file.id}"] > .tree-label`);
+                if (targetNode) {
+                    document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
+                    targetNode.classList.add('selected');
+                    targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 100);
+
+        } catch (e) { console.error("Reveal failed:", e); }
+    }
+
+    function openFile(file, mode = 'preview', reveal = false) {
         if (!file.webViewLink) return;
         let targetId = file.id; let targetMime = file.mimeType;
         if (file.mimeType.includes('shortcut') && file.shortcutDetails) { targetId = file.shortcutDetails.targetId; targetMime = file.shortcutDetails.targetMimeType; }
         currentFileId = targetId; currentFileName = file.name;
         status.innerText = `Loading: ${file.name}...`;
         let link = file.webViewLink;
-        if (mode === 'edit') { link = link.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit'); } 
+        if (mode === 'edit') { link = link.replace(/\/view.*$/, '/edit').replace(/\/preview.*$/, '/edit'); }
         else { link = link.replace(/\/edit.*$/, '/preview').replace(/\/view.*$/, '/preview'); }
         webview.src = link;
         addToRecents(file);
         performScan(targetId, targetMime);
+
+        if (reveal) {
+            revealInTree(file);
+        }
     }
 
     // UTILS
     async function refreshFolder(folderId) {
         if (!folderId || folderId === 'root') { init(); return; }
         const folderNode = document.querySelector(`.tree-node[data-id="${folderId}"]`);
-        if (!folderNode) return; 
+        if (!folderNode) return;
         const childrenContainer = folderNode.querySelector('.tree-children');
         const arrow = folderNode.querySelector('.tree-arrow');
         const files = await window.api.listFiles(folderId);
@@ -975,28 +1043,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function loadRecents() { const data = localStorage.getItem('recentFiles'); return data ? JSON.parse(data) : []; }
     function saveRecents(files) { localStorage.setItem('recentFiles', JSON.stringify(files)); renderRecents(); }
-    function renderRecents() { 
-        if(!recentList) return;
+    function renderRecents() {
+        if (!recentList) return;
         recentList.innerHTML = '';
         const recents = loadRecents();
-        if(recents.length === 0) { recentSection.style.display = 'none'; return; }
-        
-        // Only show if user hasn't collapsed it (default expanded)
-        // ... (Skipped complex collapse logic for brevity, just rendering)
+        if (recents.length === 0) { recentSection.style.display = 'none'; return; }
+
         recentSection.style.display = 'block';
-        
+
+        // Restore collapse state
+        const isCollapsed = localStorage.getItem('recentCollapsed') === 'true';
+        recentList.style.display = isCollapsed ? 'none' : 'block';
+        if (recentArrow) {
+            recentArrow.innerText = isCollapsed ? '▶' : '▼';
+            if (isCollapsed) recentArrow.classList.remove('rotated');
+            else recentArrow.classList.add('rotated');
+        }
+
+        // Bind Toggle
+        if (recentHeader) {
+            recentHeader.onclick = () => {
+                const current = recentList.style.display === 'none';
+                // If it IS hidden (current=true), we want to SHOW it (display block) => collapsed=false
+                // If it IS showing (current=false), we want to HIDE it (display none) => collapsed=true
+                const newState = !current;
+
+                recentList.style.display = current ? 'block' : 'none';
+                recentArrow.innerText = current ? '▼' : '▶';
+
+                if (current) recentArrow.classList.add('rotated');
+                else recentArrow.classList.remove('rotated');
+
+                localStorage.setItem('recentCollapsed', !current);
+            };
+        }
+
         recents.forEach(f => {
             const div = document.createElement('div');
             div.style.cssText = "padding:4px 12px; font-size:12px; color:#1967d2; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;";
             div.innerText = f.name;
-            div.onclick = () => openFile(f);
+            div.onclick = () => openFile(f, 'edit', true); // TRUE for reveal
             recentList.appendChild(div);
         });
-    } 
+    }
 
     function getIcon(mimeType) {
         if (mimeType === 'application/vnd.google-apps.folder') return '📁';
-        if (mimeType.includes('shortcut')) return '🔗'; 
+        if (mimeType.includes('shortcut')) return '🔗';
         if (mimeType.includes('spreadsheet')) return '📊';
         if (mimeType.includes('document')) return '📝';
         if (mimeType.includes('pdf')) return '📕';
@@ -1014,13 +1107,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 await window.api.renameFile({ fileId: pendingRename.id, newName: name });
                 status.innerText = "Renamed!"; refreshFolder(pendingRename.parentId); closeModal(); return;
             }
-            if (!name || !pendingCreation) return; 
+            if (!name || !pendingCreation) return;
             const folderId = pendingCreation.parentId; const fileType = pendingCreation.type; closeModal();
             let mimeType = 'application/vnd.google-apps.folder';
             if (fileType === 'doc') mimeType = 'application/vnd.google-apps.document';
             if (fileType === 'sheet') mimeType = 'application/vnd.google-apps.spreadsheet';
             status.innerText = "Creating file...";
             await window.api.createFile({ parentId: folderId, name: name, mimeType: mimeType });
+
             status.innerText = "Created!"; refreshFolder(folderId);
         };
     }
@@ -1028,36 +1122,78 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // INIT
     async function init() {
-      const oldBtn = document.getElementById('login-btn'); if (oldBtn) oldBtn.remove();
-      renderRecents();
-      try {
-        status.innerText = 'Checking connection...';
-        const test = await window.api.listFiles('root');
-        
-        fileList.innerHTML = '';
-        if (test) {
-            status.innerText = 'Ready';
-            const rootNode = createTreeItem({
-                id: 'root',
-                name: 'My Drive',
-                mimeType: 'application/vnd.google-apps.folder',
-                parents: [] 
-            });
-            fileList.appendChild(rootNode);
-            const label = rootNode.querySelector('.tree-label');
-            if(label) label.click(); 
-            
-            loadGlobalTags();
-        } else {
-            const btn = document.createElement('button'); btn.id = 'login-btn'; btn.innerText = "🔑 Sign In";
-            btn.onclick = () => window.api.openWebLogin();
-            fileList.appendChild(btn);
+        const oldBtn = document.getElementById('login-btn'); if (oldBtn) oldBtn.remove();
+        renderRecents();
+        try {
+            status.innerText = 'Checking connection...';
+            console.log('Renderer: Invoking listFiles for root...');
+
+            // Timeout promise to prevent hanging
+            const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Init Timed Out')), 5000));
+            const listPromise = window.api.listFiles('root');
+
+            const test = await Promise.race([listPromise, timeout]);
+            console.log('Renderer: listFiles returned', test ? test.length : 'null');
+
+            fileList.innerHTML = '';
+            if (test && test.length > 0) {
+                status.innerText = 'Ready';
+                const rootNode = createTreeItem({
+                    id: 'root',
+                    name: 'My Drive',
+                    mimeType: 'application/vnd.google-apps.folder',
+                    parents: []
+                });
+
+                fileList.appendChild(rootNode);
+                // Expand root
+                const label = rootNode.querySelector('.tree-label');
+                if (label) label.click();
+
+                loadGlobalTags();
+            } else {
+                status.innerText = 'Access required.';
+                fileList.innerHTML = '<div style="padding:20px; text-align:center; color:#666;">Please sign in to access Google Drive.</div>';
+
+                if (!document.getElementById('login-btn')) {
+                    const btn = document.createElement('button'); btn.id = 'login-btn'; btn.innerText = "🔑 Sign In with Google";
+                    btn.style.cssText = "margin-top:10px; padding:8px 16px; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer;";
+                    btn.onclick = async () => {
+                        status.innerText = "Launching Login...";
+                        const res = await window.api.openWebLogin();
+                        if (!res || !res.success) alert("Login failed: " + (res.error || 'Unknown'));
+                    };
+                    fileList.appendChild(btn);
+                }
+            }
+        } catch (e) {
+            console.error('Renderer: Init failed:', e);
+            status.innerText = 'Connection check failed: ' + e.message;
+            // Fallback button
+            if (!document.getElementById('login-btn')) {
+                const btn = document.createElement('button'); btn.id = 'login-btn'; btn.innerText = "🔑 Retry Login";
+                btn.style.cssText = "margin:10px; padding:8px; display:block;";
+                btn.onclick = () => window.api.openWebLogin();
+                fileList.appendChild(btn);
+            }
         }
-      } catch (e) { status.innerText = 'Connection failed.'; }
     }
-    
-    if (window.api.onAuthSuccess) { window.api.onAuthSuccess(() => init()); }
-    webview.addEventListener('ipc-message', (event) => { if (event.channel === 'header-context-menu') window.api.showHeaderMenu(event.args[0]); });
+
+
+    if (window.api.onAuthSuccess) {
+        window.api.onAuthSuccess(() => {
+            console.log('Renderer: Auth success event received. Re-initializing...');
+            status.innerText = "Login successful! Loading files...";
+            init();
+        });
+    }
+
+    // Handle header menu from webview
+    if (webview) {
+        webview.addEventListener('ipc-message', (event) => {
+            if (event.channel === 'header-context-menu') window.api.showHeaderMenu(event.args[0]);
+        });
+    }
 
     init();
 });

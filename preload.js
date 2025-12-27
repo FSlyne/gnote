@@ -24,12 +24,12 @@ contextBridge.exposeInMainWorld('api', {
   getFileDetails: (fileId) => ipcRenderer.invoke('drive:getFileDetails', fileId),
   createShortcut: (data) => ipcRenderer.invoke('drive:createShortcut', data),
   getFilesByIds: (ids) => ipcRenderer.invoke('drive:getFilesByIds', ids),
-  
+
   // =================================================================
   // DAILY DIARY
   // =================================================================
   openDailyDiary: () => ipcRenderer.invoke('drive:openDailyDiary'),
-  
+
   // =================================================================
   // SCANNER & SYNC
   // =================================================================
@@ -37,27 +37,28 @@ contextBridge.exposeInMainWorld('api', {
   syncToSheet: (data) => ipcRenderer.invoke('sheet:syncData', data),
   getAllTags: () => ipcRenderer.invoke('sheet:getAllTags'),
   getAllItems: () => ipcRenderer.invoke('sheet:getAllItems'),
-  
+
   // =================================================================
   // AI & FORMATTING (NEW)
   // =================================================================
   processWithAI: (data) => ipcRenderer.invoke('ai:processContent', data),
-  
+
   // This safely converts Markdown to HTML for the renderer
   parseMarkdown: (text) => {
-      if (typeof marked.parse === 'function') {
-          return marked.parse(text);
-      } else if (typeof marked === 'function') {
-          return marked(text);
-      }
-      return text;
+    if (!marked) return text; // Fallback if marked didn't load
+    if (typeof marked.parse === 'function') {
+      return marked.parse(text);
+    } else if (typeof marked === 'function') {
+      return marked(text);
+    }
+    return text;
   },
 
   // =================================================================
   // SYSTEM / UTILS
   // =================================================================
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
-  openWebLogin: () => ipcRenderer.invoke('auth:openWebLogin'), 
+  openWebLogin: () => ipcRenderer.invoke('auth:openWebLogin'),
 
   // =================================================================
   // MENUS
@@ -65,9 +66,9 @@ contextBridge.exposeInMainWorld('api', {
   showContextMenu: (data) => ipcRenderer.send('show-context-menu', data),
   showHeaderMenu: (data) => ipcRenderer.send('show-header-menu', data),
   onMenuAction: (callback) => ipcRenderer.on('menu-action', (event, args) => callback(args)),
-  
+
   // =================================================================
   // EVENTS
   // =================================================================
-  onAuthSuccess: (callback) => ipcRenderer.on('auth:success', () => callback()) 
+  onAuthSuccess: (callback) => ipcRenderer.on('auth:success', () => callback())
 });

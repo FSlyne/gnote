@@ -913,9 +913,9 @@ function scanAndParseDoc(doc) {
         const tagMatches = text.match(/#\w+/g);
         if (tagMatches) currentEntry.tags.push(...tagMatches);
 
-        // Generic Markers (e.g., todo:, blog:, read:)
-        // Capture "Key: Value" but exclude URLs (http:, https:)
-        const markerMatch = text.match(/^([a-zA-Z0-9_\-]+):\s*(.+)/);
+        // Generic Markers (e.g., todo::, blog::, read::)
+        // Capture "Key:: Value" but exclude URLs (http:, https:)
+        const markerMatch = text.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
         if (markerMatch) {
           const label = markerMatch[1].toLowerCase();
           if (!['http', 'https', 'mailto', 'ftp'].includes(label)) {
@@ -975,7 +975,7 @@ function parseWebLink(file) {
       });
     }
 
-    const markerMatch = trimArgs.match(/^([a-zA-Z0-9_\-]+):\s*(.+)/);
+    const markerMatch = trimArgs.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
     if (markerMatch) {
       const label = markerMatch[1].toLowerCase();
       if (!['http', 'https', 'mailto', 'ftp'].includes(label)) {
@@ -1068,6 +1068,7 @@ ipcMain.handle('drive:indexFile', async (event, fileId) => {
     } else {
       newSections = parseWebLink(docFile.data);
     }
+
     newSections.forEach(sec => {
       sec.fileId = fileId;
       sec.fileName = docFile.data.name;

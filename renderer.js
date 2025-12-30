@@ -134,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Todos
             if (section.todos) {
                 section.todos.forEach(todo => {
-                    const match = todo.match(/^([a-zA-Z0-9_\-]+):\s*(.+)/);
+                    const match = todo.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
                     let subType = 'todo';
                     if (match) {
                         const label = match[1].toLowerCase();

@@ -69,6 +69,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const cancelQuestionBtn = document.getElementById('cancel-question-btn');
     const aiContextLabel = document.getElementById('ai-context-label');
 
+    // WEB LINK MODAL ELEMENTS
+    const wlModal = document.getElementById('weblink-modal');
+    const wlName = document.getElementById('wl-name');
+    const wlUrl = document.getElementById('wl-url');
+    const wlTags = document.getElementById('wl-tags');
+    const wlNote = document.getElementById('wl-note');
+    const wlCreateBtn = document.getElementById('wl-create-btn');
+    const wlCancelBtn = document.getElementById('wl-cancel-btn');
+    let pendingWebLinkParent = null;
+
     // =========================================================================
     // 2. STATE
     // =========================================================================
@@ -88,46 +98,272 @@ document.addEventListener('DOMContentLoaded', () => {
     // 3. HELPERS
     // =========================================================================
 
-    // HELPER: Extract text from Google Doc JSON structure
-    // Defined here so it's accessible to both Menu Actions and Button Clicks
-    async function getDocTextSnippet(fileId, limit = 6000) {
+    // =========================================================================
+    // D. DASHBOARD LOGIC (New)
+    // =========================================================================
+
+    const dashboardTableBody = document.getElementById('dashboard-table-body');
+    const refreshIndexBtn = document.getElementById('refresh-index-btn');
+
+    if (closeDashBtn) closeDashBtn.onclick = () => { dashboardView.style.display = 'none'; };
+    if (dashboardBtn) dashboardBtn.onclick = () => openDashboard();
+
+    const itemFilter = document.getElementById('item-filter');
+    if (itemFilter) {
+        itemFilter.onchange = () => renderDashboardRows(allItems);
+    }
+
+    if (refreshIndexBtn) refreshIndexBtn.onclick = async () => {
+        refreshIndexBtn.innerText = "Scanning...";
+        refreshIndexBtn.disabled = true;
         try {
-            const res = await window.api.scanContent(fileId);
-            if (!res || !res.doc || !res.doc.body || !res.doc.body.content) return null;
+            const res = await window.api.rebuildIndex();
+            if (res && res.success) {
+                renderDashboardRows(res.data);
+                if (res.data.length === 0) {
+                    console.log("Scan Logs:", res.logs);
+                    alert("Scan complete but 0 items found.\n\nLogs:\n" + (res.logs || []).slice(0, 5).join('\n'));
+                }
+            } else {
+                alert("Scan failed: " + (res.error || 'Unknown'));
+            }
+        } catch (e) { console.error(e); alert("Scan Error"); }
+        refreshIndexBtn.innerText = "🔄 Refresh Index";
+        refreshIndexBtn.disabled = false;
+    };
 
-            const chunks = [];
-            let length = 0;
+    let allItems = []; // Global for filtering
 
-            const addText = (text) => {
-                if (!text) return;
-                if (length >= limit) return;
-                const slice = text.replace(/\s+/g, ' ').trim();
-                if (slice) {
-                    chunks.push(slice);
-                    length += slice.length;
+    function renderDashboardRows(items) {
+        allItems = items || []; // Update global ref
+        dashboardTableBody.innerHTML = '';
+        if (!items || items.length === 0) {
+            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No data found. Click Refresh to scan.</td></tr>';
+            return;
+        }
+
+        const flatTasks = [];
+        const dynamicTypes = new Set();
+
+        items.forEach(section => {
+            // 1. Process Tasks
+            if (section.tasks && section.tasks.length > 0) {
+                section.tasks.forEach(task => {
+                    flatTasks.push({ type: 'task', text: task.text, completed: task.completed, ...sectionProps(section) });
+                });
+            }
+
+            // 2. Process Todos (Capture Dynamic Types)
+            if (section.todos && section.todos.length > 0) {
+                section.todos.forEach(todo => {
+                    const match = todo.match(/^([a-zA-Z0-9_\-]+):\s*(.+)/);
+                    let subType = 'todo';
+                    if (match) {
+                        const label = match[1].toLowerCase();
+                        if (!['http', 'https', 'mailto'].includes(label)) {
+                            subType = label; // e.g. 'blog', 'read'
+                            dynamicTypes.add(label);
+                        }
+                    }
+                    flatTasks.push({ type: subType, text: todo, completed: false, ...sectionProps(section) });
+                });
+            }
+
+            // 3. Process Tags
+            if (section.tags && section.tags.length > 0) {
+                section.tags.forEach(tag => {
+                    flatTasks.push({ type: 'tag', text: tag, completed: false, ...sectionProps(section) });
+                });
+            }
+        });
+
+        function sectionProps(s) {
+            return { fileId: s.fileId, fileName: s.fileName, headerId: s.headerId, headerText: s.headerText, date: s.fileUpdated, isWebLink: s.isWebLink };
+        }
+
+        // DYNAMIC FILTER UI
+        const filterSelect = document.getElementById('item-filter');
+        if (filterSelect) {
+            const currentVal = filterSelect.value || 'all';
+
+            // Rebuild options but preserve selection if valid
+            let opts = `<option value="all">📂 All Items</option>
+                        <option value="task">⬜ Tasks</option>
+                        <option value="tag">🏷️ Tags</option>`;
+
+            // Add dynamic types found in scan
+            if (dynamicTypes.size > 0) {
+                opts += `<optgroup label="Markers">`;
+                dynamicTypes.forEach(t => {
+                    // Capitalize first letter
+                    const label = t.charAt(0).toUpperCase() + t.slice(1);
+                    opts += `<option value="${t}">📍 ${label}</option>`;
+                });
+                opts += `</optgroup>`;
+            }
+
+            // Only update DOM if options changed (to avoid flicker/reset on re-render)
+            // But here we re-render on *data load*, so updating is correct.
+            // We just need to make sure we don't lose the user's *current* selection if it still exists.
+            if (filterSelect.innerHTML !== opts) {
+                filterSelect.innerHTML = opts;
+                // Restore previous selection if it exists in new options, else 'all'
+                if ([...filterSelect.options].some(o => o.value === currentVal)) {
+                    filterSelect.value = currentVal;
+                } else {
+                    filterSelect.value = 'all';
+                }
+            }
+        }
+
+        // FILTER LOGIC
+        const filterVal = filterSelect ? filterSelect.value : 'all';
+
+        const filteredTasks = flatTasks.filter(t => {
+            if (filterVal === 'all') return true;
+            if (filterVal === 'task') return t.type === 'task';
+            if (filterVal === 'tag') return t.type === 'tag';
+            // For dynamic types (blog, read, etc), match exact type OR 'todo' fallback?
+            // User asked for specific selection. So text match or type match.
+            // We assigned `t.type = label` above, so simplistic check works!
+            return t.type === filterVal;
+        });
+
+        if (filteredTasks.length === 0) {
+            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No items match filter.</td></tr>';
+            return;
+        }
+
+        filteredTasks.forEach(task => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid #eee';
+
+            // Task Column
+            let taskIcon = '📍';
+            let taskStyle = 'color:#202124; font-weight:500;';
+
+            if (task.type === 'task') {
+                taskIcon = task.completed ? '✅' : '⬜';
+                if (task.completed) taskStyle = 'color:#999; text-decoration:line-through;';
+            } else if (task.type === 'tag') {
+                taskIcon = '🏷️';
+                taskStyle = 'color:#1a73e8; background:#e8f0fe; padding:2px 8px; border-radius:12px; font-size:12px;';
+            } else {
+                // Dynamic types (blog, etc)
+                taskIcon = '📝';
+                taskStyle = 'color:#e37400;';
+            }
+
+            const taskHtml = `<span style="${taskStyle}">${taskIcon} ${task.text}</span>`;
+
+            // File Column
+            const fileHtml = `<span style="font-size:12px; color:#5f6368;">📄 ${task.fileName}</span>`;
+
+            // Section Column
+            const sectionHtml = `<span style="font-size:12px; color:#1a73e8;"># ${task.headerText}</span>`;
+
+            // Date
+            const dateHtml = `<span style="font-size:11px; color:#666;">${new Date(task.date).toLocaleDateString()}</span>`;
+
+            // Action
+            const actionBtn = `<button class="open-link-btn" data-fid="${task.fileId}" data-hid="${task.headerId}" data-isweblink="${task.isWebLink || 'false'}" style="padding:4px 8px; cursor:pointer; border:1px solid #dadce0; background:white; border-radius:4px; font-size:11px;">Open ↗</button>`;
+
+            tr.innerHTML = `
+                <td style="padding:10px;">${taskHtml}</td>
+                <td style="padding:10px;">${fileHtml}</td>
+                <td style="padding:10px;">${sectionHtml}</td>
+                <td style="padding:10px;">${dateHtml}</td>
+                <td style="padding:10px;">${actionBtn}</td>
+            `;
+            dashboardTableBody.appendChild(tr);
+        });
+
+        // Attach listeners
+        document.querySelectorAll('.open-link-btn').forEach(btn => {
+            btn.onclick = async (e) => {
+                const fid = e.target.getAttribute('data-fid');
+                const hid = e.target.getAttribute('data-hid');
+                const btnEl = e.target;
+                const originalText = btnEl.innerText;
+
+                btnEl.innerText = "Opening...";
+                btnEl.disabled = true;
+
+                try {
+                    // Always fetch details to determine type (robust against stale index)
+                    const info = await window.api.getFileDetails(fid);
+                    const isWebLink = info.metadata.appProperties && info.metadata.appProperties.role === 'web_link';
+
+                    if (isWebLink) {
+                        // Open Edit Modal
+                        const fileData = {
+                            id: info.metadata.id,
+                            name: info.metadata.name,
+                            parentId: (info.metadata.parents && info.metadata.parents.length) ? info.metadata.parents[0] : 'root',
+                            appProperties: info.metadata.appProperties || {}
+                        };
+
+                        pendingWebLinkEdit = fileData;
+                        pendingWebLinkParent = null;
+                        if (wlModal) {
+                            wlModal.style.display = 'flex';
+                            wlName.value = fileData.name || '';
+                            const ap = fileData.appProperties;
+                            wlUrl.value = ap.url || '';
+                            wlNote.value = ap.note || '';
+                            let tagStr = '';
+                            try { tagStr = JSON.parse(ap.tags || '[]').join(', '); } catch (e) { }
+                            wlTags.value = tagStr;
+                            if (wlCreateBtn) wlCreateBtn.innerText = "Save Changes";
+                            wlName.focus();
+                        }
+                        dashboardView.style.display = 'none';
+                    } else {
+                        // Normal Doc Link
+                        const deepLink = `https://docs.google.com/document/d/${fid}/edit#heading=${hid}`;
+                        webview.src = deepLink;
+                        dashboardView.style.display = 'none';
+                    }
+                } catch (err) {
+                    console.error("Open failed:", err);
+                    alert("Failed to open item: " + err.message);
+                } finally {
+                    btnEl.innerText = originalText;
+                    btnEl.disabled = false;
                 }
             };
+        });
+    }
 
-            const walk = (contentList) => {
-                contentList.forEach(el => {
-                    if (el.paragraph && el.paragraph.elements) {
-                        el.paragraph.elements.forEach(elem => {
-                            if (elem.textRun && elem.textRun.content) addText(elem.textRun.content);
-                        });
-                    }
-                    if (el.table) {
-                        el.table.tableRows.forEach(row => row.tableCells.forEach(cell => walk(cell.content || [])));
-                    }
-                });
-            };
+    async function openDashboard() {
+        dashboardView.style.display = 'flex';
+        dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#666;">Loading tasks...</td></tr>';
 
-            walk(res.doc.body.content);
-            return chunks.join('\n\n');
+        // SMART SYNC: Update current file immediately so changes appear
+        if (currentFileId) {
+            try {
+                await window.api.indexFile(currentFileId);
+            } catch (e) {
+                console.warn("SmartSync on open failed:", e);
+            }
+        }
+
+        // ALWAYS Load Index (to show fresh data)
+        try {
+            const res = await window.api.loadIndex();
+            if (res && res.success && res.data.length > 0) {
+                renderDashboardRows(res.data);
+                // Update global items reference for filtering
+                allItems = res.data;
+            } else {
+                dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">Index is empty. Click <b>Refresh Index</b> to scan your docs.</td></tr>';
+            }
         } catch (e) {
-            console.warn('Doc snippet extraction failed:', e);
-            return null;
+            console.error("Failed to load index:", e);
+            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#d93025;">Error loading index.</td></tr>';
         }
     }
+
 
     // =========================================================================
     // 4. CORE UI ACTIONS
@@ -141,92 +377,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (togglePaneBtn) togglePaneBtn.innerHTML = isHidden ? '👁️' : '🚫';
     }
 
-    async function openDashboard() {
-        if (!dashboardView) return;
-        dashboardView.style.display = 'flex';
-        dashboardTable.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center;">Loading tasks...</td></tr>';
 
-        const allItems = await window.api.getAllItems();
 
-        // Render Dashboard Logic
-        let filterContainer = document.getElementById('dash-filter-container');
-        if (!filterContainer) {
-            const headerSection = dashboardView.querySelector('div');
-            filterContainer = document.createElement('div');
-            filterContainer.id = 'dash-filter-container';
-            filterContainer.style.cssText = "padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #eee; display:flex; gap:10px; align-items:center;";
-            filterContainer.innerHTML = `
-                <select id="dash-status-filter" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:12px;">
-                    <option value="All">All Status</option>
-                    <option value="Open" selected>Open Only</option>
-                    <option value="Closed">Closed Only</option>
-                </select>
-                <select id="dash-sort-filter" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:12px;">
-                    <option value="Newest">Newest Created</option>
-                    <option value="Oldest">Oldest Created</option>
-                </select>
-                <span style="flex:1;"></span>
-                <span id="dash-count" style="font-size:12px; color:#666;"></span>
-            `;
-            headerSection.insertAdjacentElement('afterend', filterContainer);
-            document.getElementById('dash-status-filter').addEventListener('change', renderDashboard);
-            document.getElementById('dash-sort-filter').addEventListener('change', renderDashboard);
-        }
 
-        function renderDashboard() {
-            const statusFilter = document.getElementById('dash-status-filter').value;
-            const sortFilter = document.getElementById('dash-sort-filter').value;
-
-            let filtered = allItems.filter(item => {
-                if (statusFilter === 'All') return true;
-                return item.status === statusFilter;
-            });
-
-            filtered.sort((a, b) => {
-                const dateA = new Date(a.created).getTime();
-                const dateB = new Date(b.created).getTime();
-                if (sortFilter === 'Newest') return dateB - dateA;
-                return dateA - dateB;
-            });
-
-            dashboardTable.innerHTML = '';
-            document.getElementById('dash-count').innerText = `${filtered.length} tasks`;
-
-            if (filtered.length === 0) {
-                dashboardTable.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No tasks found.</td></tr>';
-                return;
-            }
-
-            filtered.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.style.cssText = "background: white;";
-                if (dashboardTable.children.length % 2 === 0) tr.style.background = "#fcfcfc";
-                let statusColor = '#d93025'; let statusBg = '#fce8e6';
-                if (item.status === 'Closed') { statusColor = '#188038'; statusBg = '#e6f4ea'; }
-
-                tr.innerHTML = `
-                    <td style="padding:4px 8px;">
-                        <span style="background:${statusBg}; color:${statusColor}; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block; width:45px; text-align:center;">
-                            ${item.status.toUpperCase()}
-                        </span>
-                    </td>
-                    <td style="padding:4px 8px; color:#202124; font-size:13px;">${item.content}</td>
-                    <td style="padding:4px 8px; color:#5f6368; font-size:11px;">${item.created ? item.created.split(',')[0] : '-'}</td>
-                    <td style="padding:4px 8px;">
-                        <button class="jump-btn" style="padding:2px 8px; background:#f1f3f4; color:#1967d2; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Jump</button>
-                    </td>
-                `;
-                tr.querySelector('.jump-btn').onclick = () => {
-                    dashboardView.style.display = 'none';
-                    let link = `https://docs.google.com/document/d/${item.fileId}/edit`;
-                    if (item.headerId) link += `#heading=${item.headerId}`;
-                    webview.src = link;
-                };
-                dashboardTable.appendChild(tr);
-            });
-        }
-        renderDashboard();
-    }
 
     async function openToday() {
         status.innerText = "Locating Daily Diary...";
@@ -430,6 +583,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (modal) { modal.style.display = 'flex'; nameInput.focus(); }
             }
 
+            if (action === 'create-weblink') {
+                pendingWebLinkParent = data.parentId;
+                pendingWebLinkEdit = null; // Clear edit mode
+                if (wlModal) {
+                    wlModal.style.display = 'flex';
+                    wlName.value = ''; wlUrl.value = ''; wlTags.value = ''; wlNote.value = '';
+                    if (wlCreateBtn) wlCreateBtn.innerText = "Create Link";
+                    wlName.focus();
+                }
+            }
+
+            if (action === 'edit-weblink') {
+                pendingWebLinkEdit = data;
+                pendingWebLinkParent = null; // Not strictly needed for edit but good hygiene
+                if (wlModal) {
+                    wlModal.style.display = 'flex';
+                    wlName.value = data.name || '';
+
+                    const ap = data.appProperties || {};
+                    wlUrl.value = ap.url || '';
+                    wlNote.value = ap.note || '';
+
+                    let tagStr = '';
+                    try { tagStr = JSON.parse(ap.tags || '[]').join(', '); } catch (e) { }
+                    wlTags.value = tagStr;
+
+                    if (wlCreateBtn) wlCreateBtn.innerText = "Save Changes";
+                    wlName.focus();
+                }
+            }
+
             if (action === 'details') {
                 if (!detailsModal) return;
                 detailsTitle.innerText = `Loading: ${data.name}...`; detailsModal.style.display = 'flex';
@@ -441,11 +625,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     const info = await window.api.getFileDetails(data.id);
                     detailsTitle.innerText = info.metadata.name;
                     const pathString = info.metadata.fullPath || '-';
+
+                    let extraRows = '';
+                    if (info.metadata.appProperties && info.metadata.appProperties.role === 'web_link') {
+                        const ap = info.metadata.appProperties;
+                        let tagsHtml = '';
+                        try {
+                            const tags = JSON.parse(ap.tags || '[]');
+                            tagsHtml = tags.map(t => `<span style="background:#e8f0fe; padding:2px 6px; border-radius:4px; margin-right:4px;">${t}</span>`).join('');
+                        } catch (e) { }
+
+                        extraRows = `
+                            <tr><td colspan="2" style="border-top:1px solid #eee; padding-top:10px; font-weight:bold; color:#1967d2;">Web Link Details</td></tr>
+                            <tr><td style="padding:5px;">URL</td><td><a href="#" onclick="window.api.openExternal('${ap.url}')">${ap.url}</a></td></tr>
+                            <tr><td style="padding:5px;">Tags</td><td>${tagsHtml || '-'}</td></tr>
+                            <tr><td style="padding:5px; vertical-align:top;">Note</td><td style="white-space:pre-wrap;">${ap.note || '-'}</td></tr>
+                         `;
+                    }
+
                     metaTable.innerHTML = `
                         <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                         <tr><td style="padding:5px;">Type</td><td>${info.metadata.mimeType}</td></tr>
                         <tr><td style="padding:5px;">Size</td><td>${info.metadata.size || '-'}</td></tr>
                         <tr><td style="padding:5px;">Location</td><td title="${pathString}">${pathString}</td></tr>
+                        ${extraRows}
                         </table>
                     `;
                     if (info.revisions.length > 0) versionsList.innerHTML = info.revisions.map(rev => `<div>${new Date(rev.modifiedTime).toLocaleString()}</div>`).join('');
@@ -783,17 +986,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        const btn = document.createElement('button');
-        btn.id = 'manual-sync-btn';
-        btn.innerText = "📥 Sync to Master Index";
-        btn.style.cssText = "margin: 10px; width:calc(100% - 20px); padding:8px; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer;";
-        btn.onclick = async () => {
-            status.innerText = "Syncing...";
-            await window.api.syncToSheet({ fileId, items: currentScanItems });
-            status.innerText = "Synced!";
-            loadGlobalTags();
-        };
-        docStructure.prepend(btn);
+
     }
 
     // CREATE TREE ITEM
@@ -824,6 +1017,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let icon = getIcon(file.mimeType);
         if (isRoot) icon = 'MyDrive';
         if (isSectionLink) icon = '🔖';
+        if (file.appProperties && file.appProperties.role === 'web_link') icon = '🌐';
 
         if (isRoot) {
             label.innerHTML = `<span class="tree-icon">🏠</span><span style="font-weight:bold;">${file.name}</span>`;
@@ -839,6 +1033,14 @@ document.addEventListener('DOMContentLoaded', () => {
             e.stopPropagation();
             document.querySelectorAll('.tree-label').forEach(el => el.classList.remove('selected'));
             label.classList.add('selected');
+
+            if (file.appProperties && file.appProperties.role === 'web_link') {
+                const url = file.appProperties.url;
+                if (!url) return;
+                status.innerText = `Opening Link: ${file.name}...`;
+                window.api.openExternal(url);
+                return;
+            }
 
             if (isSectionLink) {
                 const srcId = file.appProperties.sourceFileId;
@@ -873,9 +1075,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         label.addEventListener('contextmenu', (e) => {
             e.preventDefault();
+            console.log('Renderer: Context Menu for', file.name, 'Props:', file.appProperties);
             window.api.showContextMenu({
                 name: file.name, link: file.webViewLink, isFolder: isFolder,
-                id: file.id, parentId: currentParentId, clipboardItem: clipboardItem, shortcutDetails: file.shortcutDetails
+                id: file.id, parentId: currentParentId, clipboardItem: clipboardItem, shortcutDetails: file.shortcutDetails,
+                appProperties: file.appProperties
             });
         });
 
@@ -1005,6 +1209,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!file.webViewLink) return;
         let targetId = file.id; let targetMime = file.mimeType;
         if (file.mimeType.includes('shortcut') && file.shortcutDetails) { targetId = file.shortcutDetails.targetId; targetMime = file.shortcutDetails.targetMimeType; }
+
+        // SMART SYNC: Index the previous file in background
+        if (currentFileId && currentFileId !== targetId) {
+            console.log(`SmartSync: Triggering background index for ${currentFileId}`);
+            window.api.indexFile(currentFileId).then(res => {
+                if (res.success) console.log(`SmartSync Success for ${currentFileName}`);
+                else console.warn(`SmartSync Failed:`, res.error);
+            });
+        }
+
         currentFileId = targetId; currentFileName = file.name;
         status.innerText = `Loading: ${file.name}...`;
         let link = file.webViewLink;
@@ -1193,6 +1407,74 @@ document.addEventListener('DOMContentLoaded', () => {
         webview.addEventListener('ipc-message', (event) => {
             if (event.channel === 'header-context-menu') window.api.showHeaderMenu(event.args[0]);
         });
+    }
+
+    // =========================================================================
+    // WEB LINK MODAL LOGIC (Restored)
+    // =========================================================================
+
+    // Add pendingEdit state
+    let pendingWebLinkEdit = null;
+
+    const wlLaunchBtn = document.getElementById('wl-launch-btn');
+    if (wlLaunchBtn) wlLaunchBtn.onclick = () => {
+        const url = wlUrl.value.trim();
+        if (url) window.api.openExternal(url);
+    };
+
+    if (wlCancelBtn) wlCancelBtn.onclick = () => { wlModal.style.display = 'none'; pendingWebLinkEdit = null; };
+    if (wlCreateBtn) {
+        wlCreateBtn.onclick = async () => {
+            console.log('Renderer: Web Link Save Clicked');
+            const name = wlName.value.trim();
+            const url = wlUrl.value.trim();
+            const note = wlNote.value.trim();
+            const tags = wlTags.value.split(',').map(t => t.trim()).filter(t => t);
+
+            if (!name || !url) { alert("Name and URL are required!"); return; }
+
+            wlModal.style.display = 'none';
+
+            if (pendingWebLinkEdit) {
+                status.innerText = "Updating Link...";
+                try {
+                    await window.api.updateWebLink({
+                        fileId: pendingWebLinkEdit.id,
+                        name, url, note, tags
+                    });
+                    // SMART SYNC: Index immediately
+                    await window.api.indexFile(pendingWebLinkEdit.id);
+
+                    status.innerText = "Web Link Updated!";
+                    refreshFolder(pendingWebLinkParent || pendingWebLinkEdit.parentId || 'root');
+                } catch (err) {
+                    console.error(err);
+                    status.innerText = "Update failed.";
+                    alert("Error: " + err.message);
+                }
+                pendingWebLinkEdit = null;
+                return;
+            }
+
+            status.innerText = "Creating Link...";
+
+            try {
+                console.log('Renderer: Calling createWebLink', { pendingWebLinkParent, name, url });
+                const newFile = await window.api.createWebLink({
+                    parentId: pendingWebLinkParent || 'root',
+                    name, url, note, tags
+                });
+                // SMART SYNC: Index immediately (if newFile contains ID)
+                if (newFile && newFile.id) await window.api.indexFile(newFile.id);
+
+                status.innerText = "Web Link Created!";
+                refreshFolder(pendingWebLinkParent || 'root');
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Creation failed.";
+                alert("Error: " + err.message);
+            }
+        };
     }
 
     init();

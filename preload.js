@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('api', {
   moveFile: (data) => ipcRenderer.invoke('drive:moveFile', data),
   renameFile: (data) => ipcRenderer.invoke('drive:renameFile', data),
   createSectionLink: (data) => ipcRenderer.invoke('drive:createSectionLink', data),
+  createWebLink: (data) => ipcRenderer.invoke('drive:createWebLink', data),
+  updateWebLink: (data) => ipcRenderer.invoke('drive:updateWebLink', data),
   getFileDetails: (fileId) => ipcRenderer.invoke('drive:getFileDetails', fileId),
   createShortcut: (data) => ipcRenderer.invoke('drive:createShortcut', data),
   getFilesByIds: (ids) => ipcRenderer.invoke('drive:getFilesByIds', ids),
@@ -34,9 +36,18 @@ contextBridge.exposeInMainWorld('api', {
   // SCANNER & SYNC
   // =================================================================
   scanContent: (fileId) => ipcRenderer.invoke('doc:scanContent', fileId),
-  syncToSheet: (data) => ipcRenderer.invoke('sheet:syncData', data),
-  getAllTags: () => ipcRenderer.invoke('sheet:getAllTags'),
-  getAllItems: () => ipcRenderer.invoke('sheet:getAllItems'),
+  scanContent: (fileId) => ipcRenderer.invoke('doc:scanContent', fileId),
+  getAllTags: () => ipcRenderer.invoke('drive:getAllTags'),
+
+  // =================================================================
+  // AI & FORMATTING (NEW)
+  // =================================================================
+  // =================================================================
+  // DATABASE / INDEXER
+  // =================================================================
+  rebuildIndex: () => ipcRenderer.invoke('drive:rebuildIndex'),
+  loadIndex: () => ipcRenderer.invoke('drive:loadIndex'),
+  indexFile: (fileId) => ipcRenderer.invoke('drive:indexFile', fileId),
 
   // =================================================================
   // AI & FORMATTING (NEW)

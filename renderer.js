@@ -103,7 +103,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // =========================================================================
 
     const dashboardTableBody = document.getElementById('dashboard-table-body');
-    const refreshIndexBtn = document.getElementById('refresh-index-btn');
 
     if (closeDashBtn) closeDashBtn.onclick = () => { dashboardView.style.display = 'none'; };
     if (dashboardBtn) dashboardBtn.onclick = () => openDashboard();
@@ -113,67 +112,43 @@ document.addEventListener('DOMContentLoaded', () => {
         itemFilter.onchange = () => renderDashboardRows(allItems);
     }
 
-    if (refreshIndexBtn) refreshIndexBtn.onclick = async () => {
-        refreshIndexBtn.innerText = "Scanning...";
-        refreshIndexBtn.disabled = true;
-        try {
-            const res = await window.api.rebuildIndex();
-            if (res && res.success) {
-                renderDashboardRows(res.data);
-                if (res.data.length === 0) {
-                    console.log("Scan Logs:", res.logs);
-                    alert("Scan complete but 0 items found.\n\nLogs:\n" + (res.logs || []).slice(0, 5).join('\n'));
-                }
-            } else {
-                alert("Scan failed: " + (res.error || 'Unknown'));
-            }
-        } catch (e) { console.error(e); alert("Scan Error"); }
-        refreshIndexBtn.innerText = "🔄 Refresh Index";
-        refreshIndexBtn.disabled = false;
-    };
-
     let allItems = []; // Global for filtering
 
     function renderDashboardRows(items) {
-        allItems = items || []; // Update global ref
+        allItems = items || [];
         dashboardTableBody.innerHTML = '';
         if (!items || items.length === 0) {
-            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No data found. Click Refresh to scan.</td></tr>';
+            dashboardTableBody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#999;">No data found.</td></tr>';
             return;
         }
 
         const flatTasks = [];
         const dynamicTypes = new Set();
 
+        // 1. Flatten for filtering first
         items.forEach(section => {
-            // 1. Process Tasks
-            if (section.tasks && section.tasks.length > 0) {
-                section.tasks.forEach(task => {
-                    flatTasks.push({ type: 'task', text: task.text, completed: task.completed, ...sectionProps(section) });
-                });
+            // Tasks
+            if (section.tasks) {
+                section.tasks.forEach(t => flatTasks.push({ type: 'task', text: t.text, completed: t.completed, ...sectionProps(section) }));
             }
-
-            // 2. Process Todos (Capture Dynamic Types)
-            if (section.todos && section.todos.length > 0) {
+            // Todos
+            if (section.todos) {
                 section.todos.forEach(todo => {
                     const match = todo.match(/^([a-zA-Z0-9_\-]+):\s*(.+)/);
                     let subType = 'todo';
                     if (match) {
                         const label = match[1].toLowerCase();
                         if (!['http', 'https', 'mailto'].includes(label)) {
-                            subType = label; // e.g. 'blog', 'read'
+                            subType = label;
                             dynamicTypes.add(label);
                         }
                     }
                     flatTasks.push({ type: subType, text: todo, completed: false, ...sectionProps(section) });
                 });
             }
-
-            // 3. Process Tags
-            if (section.tags && section.tags.length > 0) {
-                section.tags.forEach(tag => {
-                    flatTasks.push({ type: 'tag', text: tag, completed: false, ...sectionProps(section) });
-                });
+            // Tags
+            if (section.tags) {
+                section.tags.forEach(tag => flatTasks.push({ type: 'tag', text: tag, completed: false, ...sectionProps(section) }));
             }
         });
 
@@ -181,101 +156,128 @@ document.addEventListener('DOMContentLoaded', () => {
             return { fileId: s.fileId, fileName: s.fileName, headerId: s.headerId, headerText: s.headerText, date: s.fileUpdated, isWebLink: s.isWebLink };
         }
 
-        // DYNAMIC FILTER UI
+        // DYNAMIC FILTER UI (Keep existing logic)
         const filterSelect = document.getElementById('item-filter');
         if (filterSelect) {
             const currentVal = filterSelect.value || 'all';
-
-            // Rebuild options but preserve selection if valid
             let opts = `<option value="all">📂 All Items</option>
                         <option value="task">⬜ Tasks</option>
                         <option value="tag">🏷️ Tags</option>`;
-
-            // Add dynamic types found in scan
             if (dynamicTypes.size > 0) {
                 opts += `<optgroup label="Markers">`;
                 dynamicTypes.forEach(t => {
-                    // Capitalize first letter
                     const label = t.charAt(0).toUpperCase() + t.slice(1);
                     opts += `<option value="${t}">📍 ${label}</option>`;
                 });
                 opts += `</optgroup>`;
             }
-
-            // Only update DOM if options changed (to avoid flicker/reset on re-render)
-            // But here we re-render on *data load*, so updating is correct.
-            // We just need to make sure we don't lose the user's *current* selection if it still exists.
             if (filterSelect.innerHTML !== opts) {
                 filterSelect.innerHTML = opts;
-                // Restore previous selection if it exists in new options, else 'all'
-                if ([...filterSelect.options].some(o => o.value === currentVal)) {
-                    filterSelect.value = currentVal;
-                } else {
-                    filterSelect.value = 'all';
-                }
+                if ([...filterSelect.options].some(o => o.value === currentVal)) filterSelect.value = currentVal;
+                else filterSelect.value = 'all';
             }
         }
 
-        // FILTER LOGIC
+        // FILTER
         const filterVal = filterSelect ? filterSelect.value : 'all';
-
         const filteredTasks = flatTasks.filter(t => {
             if (filterVal === 'all') return true;
             if (filterVal === 'task') return t.type === 'task';
             if (filterVal === 'tag') return t.type === 'tag';
-            // For dynamic types (blog, read, etc), match exact type OR 'todo' fallback?
-            // User asked for specific selection. So text match or type match.
-            // We assigned `t.type = label` above, so simplistic check works!
             return t.type === filterVal;
         });
 
         if (filteredTasks.length === 0) {
-            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">No items match filter.</td></tr>';
+            dashboardTableBody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#999;">No items match filter.</td></tr>';
             return;
         }
 
+        // 2. GROUPING logic
+        // Structure: Map<FileID, { fileName, sections: Map<HeaderID, { headerText, tasks[] }> }>
+        const groups = new Map();
+
         filteredTasks.forEach(task => {
-            const tr = document.createElement('tr');
-            tr.style.borderBottom = '1px solid #eee';
-
-            // Task Column
-            let taskIcon = '📍';
-            let taskStyle = 'color:#202124; font-weight:500;';
-
-            if (task.type === 'task') {
-                taskIcon = task.completed ? '✅' : '⬜';
-                if (task.completed) taskStyle = 'color:#999; text-decoration:line-through;';
-            } else if (task.type === 'tag') {
-                taskIcon = '🏷️';
-                taskStyle = 'color:#1a73e8; background:#e8f0fe; padding:2px 8px; border-radius:12px; font-size:12px;';
-            } else {
-                // Dynamic types (blog, etc)
-                taskIcon = '📝';
-                taskStyle = 'color:#e37400;';
+            if (!groups.has(task.fileId)) {
+                groups.set(task.fileId, {
+                    fileName: task.fileName,
+                    isWebLink: task.isWebLink,
+                    sections: new Map()
+                });
             }
+            const fileGroup = groups.get(task.fileId);
 
-            const taskHtml = `<span style="${taskStyle}">${taskIcon} ${task.text}</span>`;
+            // For WebLinks, force header to 'Main' or hidden
+            const headerKey = task.headerId || 'root';
+            if (!fileGroup.sections.has(headerKey)) {
+                fileGroup.sections.set(headerKey, {
+                    headerText: task.headerText,
+                    tasks: []
+                });
+            }
+            fileGroup.sections.get(headerKey).tasks.push(task);
+        });
 
-            // File Column
-            const fileHtml = `<span style="font-size:12px; color:#5f6368;">📄 ${task.fileName}</span>`;
+        // 3. RENDER
+        groups.forEach((fileGroup, fileId) => {
+            // File Header
+            const fileTr = document.createElement('tr');
+            fileTr.innerHTML = `
+                <td colspan="3" style="padding:10px 10px 5px 10px; background:#f8f9fa; border-top:1px solid #ddd; font-weight:bold; color:#3c4043;">
+                    ${fileGroup.isWebLink ? '🔗' : '📄'} ${fileGroup.fileName}
+                </td>`;
+            dashboardTableBody.appendChild(fileTr);
 
-            // Section Column
-            const sectionHtml = `<span style="font-size:12px; color:#1a73e8;"># ${task.headerText}</span>`;
+            fileGroup.sections.forEach((res, headerId) => {
+                // Section Header (only if not root/implicit or if distinct sections exist?)
+                // Actually, if headerText exists and isn't file name repeating, or just always show for clarity?
+                // For GDocs, headerText is usually the H1/H2.
+                // For WebLinks, headerText 'root' or same as filename.
 
-            // Date
-            const dateHtml = `<span style="font-size:11px; color:#666;">${new Date(task.date).toLocaleDateString()}</span>`;
+                const isRedundantHeader = (res.headerText === fileGroup.fileName) || (headerId === 'root');
 
-            // Action
-            const actionBtn = `<button class="open-link-btn" data-fid="${task.fileId}" data-hid="${task.headerId}" data-isweblink="${task.isWebLink || 'false'}" style="padding:4px 8px; cursor:pointer; border:1px solid #dadce0; background:white; border-radius:4px; font-size:11px;">Open ↗</button>`;
+                if (!isRedundantHeader) {
+                    const secTr = document.createElement('tr');
+                    secTr.innerHTML = `
+                        <td colspan="3" style="padding:4px 10px 4px 25px; background:#fff; font-size:12px; color:#1a73e8; font-weight:500;">
+                            # ${res.headerText}
+                        </td>`;
+                    dashboardTableBody.appendChild(secTr);
+                }
 
-            tr.innerHTML = `
-                <td style="padding:10px;">${taskHtml}</td>
-                <td style="padding:10px;">${fileHtml}</td>
-                <td style="padding:10px;">${sectionHtml}</td>
-                <td style="padding:10px;">${dateHtml}</td>
-                <td style="padding:10px;">${actionBtn}</td>
-            `;
-            dashboardTableBody.appendChild(tr);
+                res.tasks.forEach(task => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid #eee';
+
+                    // Icon & Style
+                    let taskIcon = '📍';
+                    let taskStyle = 'color:#202124; font-weight:500;';
+                    if (task.type === 'task') {
+                        taskIcon = task.completed ? '✅' : '⬜';
+                        if (task.completed) taskStyle = 'color:#999; text-decoration:line-through;';
+                    } else if (task.type === 'tag') {
+                        taskIcon = '🏷️';
+                        taskStyle = 'color:#1a73e8; background:#e8f0fe; padding:2px 8px; border-radius:12px; font-size:12px;';
+                    } else {
+                        taskIcon = '📝';
+                        taskStyle = 'color:#e37400;';
+                    }
+
+                    const dateHtml = `<span style="font-size:11px; color:#666;">${new Date(task.date).toLocaleDateString()}</span>`;
+                    const actionBtn = `<button class="open-link-btn" data-fid="${task.fileId}" data-hid="${task.headerId}" data-isweblink="${task.isWebLink || 'false'}" style="padding:4px 8px; cursor:pointer; border:1px solid #dadce0; background:white; border-radius:4px; font-size:11px;">Open ↗</button>`;
+
+                    // Indent task if we had a section header? Or always indent a bit from file?
+                    const indent = isRedundantHeader ? '20px' : '40px';
+
+                    tr.innerHTML = `
+                        <td style="padding:8px 10px 8px ${indent}; font-size:13px;">
+                            <span style="${taskStyle}">${taskIcon} ${task.text}</span>
+                        </td>
+                        <td style="padding:8px 10px;">${dateHtml}</td>
+                        <td style="padding:8px 10px;">${actionBtn}</td>
+                     `;
+                    dashboardTableBody.appendChild(tr);
+                });
+            });
         });
 
         // Attach listeners
@@ -1478,4 +1480,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     init();
+    // Listen for Protocol Launch (e.g. from Chrome)
+    window.api.onOpenWebLinkModal((data) => {
+        if (wlModal) {
+            dashboardView.style.display = 'none'; // Ensure dashboard off if it interferes (optional)
+            wlModal.style.display = 'flex';
+            wlName.value = data.title || '';
+            wlUrl.value = data.url || '';
+            wlNote.value = data.note || '';
+            wlTags.value = '';
+
+            // Reset Edit Mode
+            pendingWebLinkEdit = null;
+            pendingWebLinkParent = null;
+            if (wlCreateBtn) wlCreateBtn.innerText = "Create Link";
+
+            // Focus Tags since Name/URL are filled
+            wlTags.focus();
+        }
+    });
+
 });

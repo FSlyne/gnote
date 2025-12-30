@@ -1165,19 +1165,78 @@ ipcMain.handle('drive:getAllTags', async (event) => {
 });
 
 // =============================================================================
-// 6. INIT
+// 6. INIT & PROTOCOL HANDLER
 // =============================================================================
 
-async function createWindow() {
-  loadSavedCredentials();
-  createApplicationMenu();
-  win = new BrowserWindow({
-    width: 1200, height: 800, show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true }
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Someone tried to run a second instance, we should focus our window.
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+
+      // Check for protocol launch (Windows)
+      const urlRaw = commandLine.find(arg => arg.startsWith('gnote://'));
+      if (urlRaw) handleProtocolRaw(urlRaw);
+    }
   });
-  win.loadFile('index.html');
-  win.once('ready-to-show', () => win.show());
+
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient('gnote', process.execPath, [path.resolve(process.argv[1])]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient('gnote');
+  }
+
+  async function createWindow() {
+    loadSavedCredentials();
+    createApplicationMenu();
+    win = new BrowserWindow({
+      width: 1200, height: 800, show: false,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true }
+    });
+    win.loadFile('index.html');
+    win.once('ready-to-show', () => {
+      win.show();
+      // Check for startup protocol launch (Windows)
+      const urlRaw = process.argv.find(arg => arg.startsWith('gnote://'));
+      if (urlRaw) handleProtocolRaw(urlRaw);
+    });
+  }
+
+  app.whenReady().then(() => {
+    createWindow();
+    // macOS protocol handler
+    app.on('open-url', (event, url) => {
+      event.preventDefault();
+      handleProtocolRaw(url);
+    });
+  });
+
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
 
-app.whenReady().then(createWindow);
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+function handleProtocolRaw(rawUrl) {
+  try {
+    // gnote://new?url=...&title=...
+    // Format: URL might have custom scheme issues if not careful, but let's parse.
+    // On Windows rawUrl might be "gnote://..."
+    const u = new url.URL(rawUrl);
+    if (u.hostname === 'new' || u.pathname === '//new') { // accepting both formats
+      const targetUrl = u.searchParams.get('url');
+      const title = u.searchParams.get('title');
+      const note = u.searchParams.get('note') || '';
+
+      if (win && win.webContents) {
+        win.webContents.send('open-weblink-modal', { url: targetUrl, title, note });
+      }
+    }
+  } catch (e) {
+    console.error("Protocol Parse Error:", e);
+  }
+}

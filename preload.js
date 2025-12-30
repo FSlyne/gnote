@@ -81,5 +81,6 @@ contextBridge.exposeInMainWorld('api', {
   // =================================================================
   // EVENTS
   // =================================================================
-  onAuthSuccess: (callback) => ipcRenderer.on('auth:success', () => callback())
+  onAuthSuccess: (callback) => ipcRenderer.on('auth:success', () => callback()),
+  onOpenWebLinkModal: (callback) => ipcRenderer.on('open-weblink-modal', (event, data) => callback(data))
 });

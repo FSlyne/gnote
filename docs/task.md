@@ -1,0 +1,55 @@
+# Task: Implement New Pseudo File Type
+
+- [/] Analyze existing pseudo file implementation <!-- id: 0 -->
+    - [ ] Review `main.js` for `createSectionLink` and file listing logic <!-- id: 1 -->
+    - [ ] Review `renderer.js` for how `section_link` is rendered and handled <!-- id: 2 -->
+- [x] Define the new pseudo file type <!-- id: 3 -->
+    - [x] Confirm scope with- [x] Create/Edit/Launch Web Link
+- [x] Fix "Open" button (stale index issue)
+- [x] Refactor Dashboard (Group by File/Section)
+- [ ] Requirements Dock
+- [x] Implement Backend Changes <!-- id: 5 -->
+    - [x] Add `ipcMain` handler for creating the new type <!-- id: 6 -->
+    - [x] Update `appProperties` schema for the new type <!-- id: 7 -->
+- [x] Implement Frontend Changes <!-- id: 8 -->
+    - [x] Add UI for creating the new type (Context Menu/Modal) <!-- id: 9 -->
+    - [x] Add icon/rendering logic in File Tree <!-- id: 10 -->
+    - [x] Add click handling logic (e.g., opening URL or Modal) <!-- id: 11 -->
+- [x] Verify Implementation <!-- id: 12 -->
+    - [x] Test creation <!-- id: 13 -->
+- [x] Verify Implementation <!-- id: 12 -->
+    - [x] Test creation <!-- id: 13 -->
+    - [x] Test interaction <!-- id: 14 -->
+- [x] Implement Edit Functionality <!-- id: 15 -->
+    - [x] Backend: Update Context Menu & Add `updateWebLink` <!-- id: 16 -->
+    - [x] Preload: Expose `updateWebLink` <!-- id: 17 -->
+    - [x] Frontend: Re-use Modal for Editing <!-- id: 18 -->
+
+# Objective: Inline Database (Section-Based) <!-- id: 19 -->
+- [x] Backend: The Indexer <!-- id: 24 -->
+    - [x] Create `_gnote_index.json` management (Load/Save) <!-- id: 25 -->
+    - [x] Implement `doc:scanAndParse` (Header + Table detection) <!-- id: 26 -->
+    - [x] Implement `drive:rebuildIndex` (Iterate files -> Update JSON) <!-- id: 20 -->
+    - [x] Upgrade to **Incremental Sync** <!-- id: 31 -->
+        - [x] Sort file list by `modifiedTime desc` <!-- id: 32 -->
+        - [x] Load existing `_gnote_index.json` before scanning <!-- id: 33 -->
+        - [x] Merge new scan results into existing index <!-- id: 34 -->
+    - [x] Implement **Smart Sync** (Single File) <!-- id: 35 -->
+        - [x] Add `drive:indexFile(fileId)` IPC handler <!-- id: 36 -->
+        - [x] Trigger index update when closing/switching files in `renderer.js` <!-- id: 37 -->
+    - [x] Trigger index update when closing/switching files in `renderer.js` <!-- id: 37 -->
+    - [x] **Feature**: Generic Marker Capture (blog:, read:, etc.) <!-- id: 43 -->
+    - [x] **Feature**: Index Web Links (Tasks/Tags in Notes) <!-- id: 44 -->
+    - [x] Optimize Dashboard Loading (Load vs Scan) <!-- id: 38 -->
+    - [x] Optimize Dashboard Loading (Load vs Scan) <!-- id: 38 -->
+    - [x] Optimize Dashboard Loading (Load vs Scan) <!-- id: 38 -->
+    - [x] Optimize Dashboard Loading (Load vs Scan) <!-- id: 38 -->
+    - [x] Optimize Dashboard Loading (Load vs Scan) <!-- id: 38 -->
+    - [x] Implement Dashboard Filters <!-- id: 39 -->
+        - [x] Add Item Type Filter (Tasks/Todos/Tags) <!-- id: 40 -->
+        - [x] Flatten Tags into dashboard rows <!-- id: 41 -->
+    - [x] **Bug Fix**: Migrate "Right Pane" to use JSON Index <!-- id: 42 -->
+- [x] Frontend: The Dashboard <!-- id: 27 -->
+    - [x] Create `dashboard-view` in `index.html` <!-- id: 28 -->
+    - [x] Implement `renderDashboard` in `renderer.js` <!-- id: 29 -->
+    - [x] Handle Deep Links to Sections <!-- id: 30 -->

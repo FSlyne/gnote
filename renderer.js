@@ -99,272 +99,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // =========================================================================
 
     // =========================================================================
-    // D. DASHBOARD LOGIC (New)
+    // D. DASHBOARD LOGIC (Removed)
     // =========================================================================
-
-    const dashboardTableBody = document.getElementById('dashboard-table-body');
-
-    if (closeDashBtn) closeDashBtn.onclick = () => { dashboardView.style.display = 'none'; };
-    if (dashboardBtn) dashboardBtn.onclick = () => openDashboard();
-
-    const itemFilter = document.getElementById('item-filter');
-    if (itemFilter) {
-        itemFilter.onchange = () => renderDashboardRows(allItems);
-    }
-
-    let allItems = []; // Global for filtering
-
-    function renderDashboardRows(items) {
-        allItems = items || [];
-        dashboardTableBody.innerHTML = '';
-        if (!items || items.length === 0) {
-            dashboardTableBody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#999;">No data found.</td></tr>';
-            return;
-        }
-
-        const flatTasks = [];
-        const dynamicTypes = new Set();
-
-        // 1. Flatten for filtering first
-        items.forEach(section => {
-            // Tasks
-            if (section.tasks) {
-                section.tasks.forEach(t => flatTasks.push({ type: 'task', text: t.text, completed: t.completed, ...sectionProps(section) }));
-            }
-            // Todos
-            if (section.todos) {
-                section.todos.forEach(todo => {
-                    const match = todo.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
-                    let subType = 'todo';
-                    if (match) {
-                        const label = match[1].toLowerCase();
-                        if (!['http', 'https', 'mailto'].includes(label)) {
-                            subType = label;
-                            dynamicTypes.add(label);
-                        }
-                    }
-                    flatTasks.push({ type: subType, text: todo, completed: false, ...sectionProps(section) });
-                });
-            }
-            // Tags
-            if (section.tags) {
-                section.tags.forEach(tag => flatTasks.push({ type: 'tag', text: tag, completed: false, ...sectionProps(section) }));
-            }
-        });
-
-        function sectionProps(s) {
-            return { fileId: s.fileId, fileName: s.fileName, headerId: s.headerId, headerText: s.headerText, date: s.fileUpdated, isWebLink: s.isWebLink };
-        }
-
-        // DYNAMIC FILTER UI (Keep existing logic)
-        const filterSelect = document.getElementById('item-filter');
-        if (filterSelect) {
-            const currentVal = filterSelect.value || 'all';
-            let opts = `<option value="all">📂 All Items</option>
-                        <option value="task">⬜ Tasks</option>
-                        <option value="tag">🏷️ Tags</option>`;
-            if (dynamicTypes.size > 0) {
-                opts += `<optgroup label="Markers">`;
-                dynamicTypes.forEach(t => {
-                    const label = t.charAt(0).toUpperCase() + t.slice(1);
-                    opts += `<option value="${t}">📍 ${label}</option>`;
-                });
-                opts += `</optgroup>`;
-            }
-            if (filterSelect.innerHTML !== opts) {
-                filterSelect.innerHTML = opts;
-                if ([...filterSelect.options].some(o => o.value === currentVal)) filterSelect.value = currentVal;
-                else filterSelect.value = 'all';
-            }
-        }
-
-        // FILTER
-        const filterVal = filterSelect ? filterSelect.value : 'all';
-        const filteredTasks = flatTasks.filter(t => {
-            if (filterVal === 'all') return true;
-            if (filterVal === 'task') return t.type === 'task';
-            if (filterVal === 'tag') return t.type === 'tag';
-            return t.type === filterVal;
-        });
-
-        if (filteredTasks.length === 0) {
-            dashboardTableBody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#999;">No items match filter.</td></tr>';
-            return;
-        }
-
-        // 2. GROUPING logic
-        // Structure: Map<FileID, { fileName, sections: Map<HeaderID, { headerText, tasks[] }> }>
-        const groups = new Map();
-
-        filteredTasks.forEach(task => {
-            if (!groups.has(task.fileId)) {
-                groups.set(task.fileId, {
-                    fileName: task.fileName,
-                    isWebLink: task.isWebLink,
-                    sections: new Map()
-                });
-            }
-            const fileGroup = groups.get(task.fileId);
-
-            // For WebLinks, force header to 'Main' or hidden
-            const headerKey = task.headerId || 'root';
-            if (!fileGroup.sections.has(headerKey)) {
-                fileGroup.sections.set(headerKey, {
-                    headerText: task.headerText,
-                    tasks: []
-                });
-            }
-            fileGroup.sections.get(headerKey).tasks.push(task);
-        });
-
-        // 3. RENDER
-        groups.forEach((fileGroup, fileId) => {
-            // File Header
-            const fileTr = document.createElement('tr');
-            fileTr.innerHTML = `
-                <td colspan="3" style="padding:10px 10px 5px 10px; background:#f8f9fa; border-top:1px solid #ddd; font-weight:bold; color:#3c4043;">
-                    ${fileGroup.isWebLink ? '🔗' : '📄'} ${fileGroup.fileName}
-                </td>`;
-            dashboardTableBody.appendChild(fileTr);
-
-            fileGroup.sections.forEach((res, headerId) => {
-                // Section Header (only if not root/implicit or if distinct sections exist?)
-                // Actually, if headerText exists and isn't file name repeating, or just always show for clarity?
-                // For GDocs, headerText is usually the H1/H2.
-                // For WebLinks, headerText 'root' or same as filename.
-
-                const isRedundantHeader = (res.headerText === fileGroup.fileName) || (headerId === 'root');
-
-                if (!isRedundantHeader) {
-                    const secTr = document.createElement('tr');
-                    secTr.innerHTML = `
-                        <td colspan="3" style="padding:4px 10px 4px 25px; background:#fff; font-size:12px; color:#1a73e8; font-weight:500;">
-                            # ${res.headerText}
-                        </td>`;
-                    dashboardTableBody.appendChild(secTr);
-                }
-
-                res.tasks.forEach(task => {
-                    const tr = document.createElement('tr');
-                    tr.style.borderBottom = '1px solid #eee';
-
-                    // Icon & Style
-                    let taskIcon = '📍';
-                    let taskStyle = 'color:#202124; font-weight:500;';
-                    if (task.type === 'task') {
-                        taskIcon = task.completed ? '✅' : '⬜';
-                        if (task.completed) taskStyle = 'color:#999; text-decoration:line-through;';
-                    } else if (task.type === 'tag') {
-                        taskIcon = '🏷️';
-                        taskStyle = 'color:#1a73e8; background:#e8f0fe; padding:2px 8px; border-radius:12px; font-size:12px;';
-                    } else {
-                        taskIcon = '📝';
-                        taskStyle = 'color:#e37400;';
-                    }
-
-                    const dateHtml = `<span style="font-size:11px; color:#666;">${new Date(task.date).toLocaleDateString()}</span>`;
-                    const actionBtn = `<button class="open-link-btn" data-fid="${task.fileId}" data-hid="${task.headerId}" data-isweblink="${task.isWebLink || 'false'}" style="padding:4px 8px; cursor:pointer; border:1px solid #dadce0; background:white; border-radius:4px; font-size:11px;">Open ↗</button>`;
-
-                    // Indent task if we had a section header? Or always indent a bit from file?
-                    const indent = isRedundantHeader ? '20px' : '40px';
-
-                    tr.innerHTML = `
-                        <td style="padding:8px 10px 8px ${indent}; font-size:13px;">
-                            <span style="${taskStyle}">${taskIcon} ${task.text}</span>
-                        </td>
-                        <td style="padding:8px 10px;">${dateHtml}</td>
-                        <td style="padding:8px 10px;">${actionBtn}</td>
-                     `;
-                    dashboardTableBody.appendChild(tr);
-                });
-            });
-        });
-
-        // Attach listeners
-        document.querySelectorAll('.open-link-btn').forEach(btn => {
-            btn.onclick = async (e) => {
-                const fid = e.target.getAttribute('data-fid');
-                const hid = e.target.getAttribute('data-hid');
-                const btnEl = e.target;
-                const originalText = btnEl.innerText;
-
-                btnEl.innerText = "Opening...";
-                btnEl.disabled = true;
-
-                try {
-                    // Always fetch details to determine type (robust against stale index)
-                    const info = await window.api.getFileDetails(fid);
-                    const isWebLink = info.metadata.appProperties && info.metadata.appProperties.role === 'web_link';
-
-                    if (isWebLink) {
-                        // Open Edit Modal
-                        const fileData = {
-                            id: info.metadata.id,
-                            name: info.metadata.name,
-                            parentId: (info.metadata.parents && info.metadata.parents.length) ? info.metadata.parents[0] : 'root',
-                            appProperties: info.metadata.appProperties || {}
-                        };
-
-                        pendingWebLinkEdit = fileData;
-                        pendingWebLinkParent = null;
-                        if (wlModal) {
-                            wlModal.style.display = 'flex';
-                            wlName.value = fileData.name || '';
-                            const ap = fileData.appProperties;
-                            wlUrl.value = ap.url || '';
-                            wlNote.value = ap.note || '';
-                            let tagStr = '';
-                            try { tagStr = JSON.parse(ap.tags || '[]').join(', '); } catch (e) { }
-                            wlTags.value = tagStr;
-                            if (wlCreateBtn) wlCreateBtn.innerText = "Save Changes";
-                            wlName.focus();
-                        }
-                        dashboardView.style.display = 'none';
-                    } else {
-                        // Normal Doc Link
-                        const deepLink = `https://docs.google.com/document/d/${fid}/edit#heading=${hid}`;
-                        webview.src = deepLink;
-                        dashboardView.style.display = 'none';
-                    }
-                } catch (err) {
-                    console.error("Open failed:", err);
-                    alert("Failed to open item: " + err.message);
-                } finally {
-                    btnEl.innerText = originalText;
-                    btnEl.disabled = false;
-                }
-            };
-        });
-    }
-
-    async function openDashboard() {
-        dashboardView.style.display = 'flex';
-        dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#666;">Loading tasks...</td></tr>';
-
-        // SMART SYNC: Update current file immediately so changes appear
-        if (currentFileId) {
-            try {
-                await window.api.indexFile(currentFileId);
-            } catch (e) {
-                console.warn("SmartSync on open failed:", e);
-            }
-        }
-
-        // ALWAYS Load Index (to show fresh data)
-        try {
-            const res = await window.api.loadIndex();
-            if (res && res.success && res.data.length > 0) {
-                renderDashboardRows(res.data);
-                // Update global items reference for filtering
-                allItems = res.data;
-            } else {
-                dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#999;">Index is empty. Click <b>Refresh Index</b> to scan your docs.</td></tr>';
-            }
-        } catch (e) {
-            console.error("Failed to load index:", e);
-            dashboardTableBody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#d93025;">Error loading index.</td></tr>';
-        }
-    }
+    // Legacy dashboard removed in favor of external database tool.
 
 
     // =========================================================================
@@ -1213,13 +950,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (file.mimeType.includes('shortcut') && file.shortcutDetails) { targetId = file.shortcutDetails.targetId; targetMime = file.shortcutDetails.targetMimeType; }
 
         // SMART SYNC: Index the previous file in background
-        if (currentFileId && currentFileId !== targetId) {
-            console.log(`SmartSync: Triggering background index for ${currentFileId}`);
-            window.api.indexFile(currentFileId).then(res => {
-                if (res.success) console.log(`SmartSync Success for ${currentFileName}`);
-                else console.warn(`SmartSync Failed:`, res.error);
-            });
-        }
+        // REMOVED: Background scanner now handles this.
+        // if (currentFileId && currentFileId !== targetId) { ... }
 
         currentFileId = targetId; currentFileName = file.name;
         status.innerText = `Loading: ${file.name}...`;
@@ -1445,7 +1177,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         name, url, note, tags
                     });
                     // SMART SYNC: Index immediately
-                    await window.api.indexFile(pendingWebLinkEdit.id);
+                    // REMOVED: Background scanner handles this.
+                    // await window.api.indexFile(pendingWebLinkEdit.id);
 
                     status.innerText = "Web Link Updated!";
                     refreshFolder(pendingWebLinkParent || pendingWebLinkEdit.parentId || 'root');
@@ -1467,7 +1200,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     name, url, note, tags
                 });
                 // SMART SYNC: Index immediately (if newFile contains ID)
-                if (newFile && newFile.id) await window.api.indexFile(newFile.id);
+                // REMOVED: Background scanner handles this.
+                // if (newFile && newFile.id) await window.api.indexFile(newFile.id);
 
                 status.innerText = "Web Link Created!";
                 refreshFolder(pendingWebLinkParent || 'root');

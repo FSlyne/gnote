@@ -815,347 +815,150 @@ ipcMain.on('show-header-menu', (event, { url }) => {
 });
 
 // =============================================================================
-// D. INLINE DATABASE ENGINE (Section-Based)
+// D. INLINE DATABASE ADAPTER (Reads database.json)
 // =============================================================================
 
-function extractText(element) {
-  if (element.paragraph) {
-    return element.paragraph.elements.map(e => e.textRun ? e.textRun.content : '').join('');
-  }
-  if (element.content) { // Table Cell
-    return element.content.map(e => extractText(e)).join('\n');
-  }
-  return '';
-}
+// Helper: Convert flat DB items to GNote Section format
+function adaptDatabaseToSections(dbItems) {
+  const sectionsMap = new Map(); // Key: sourceId + sectionName
 
-function scanAndParseDoc(doc) {
-  const sections = [];
-  let currentHeader = { id: 'root', text: 'Root', level: 0 };
-  let currentEntry = {
-    headerId: 'root', headerText: 'Root',
-    properties: {}, tags: [], tasks: [], todos: []
-  };
+  dbItems.forEach(item => {
+    if (!item.sourceId) return;
 
-  const flushEntry = () => {
-    if (Object.keys(currentEntry.properties).length > 0 ||
-      currentEntry.tags.length > 0 ||
-      currentEntry.tasks.length > 0 ||
-      currentEntry.todos.length > 0) {
-      sections.push({ ...currentEntry });
-    }
-  };
+    const sectionName = item.section || 'Root';
+    const key = `${item.sourceId}|${sectionName}`;
 
-  const traverse = (elements) => {
-    if (!elements) return;
-    for (const el of elements) {
-
-      // HEADERS
-      if (el.paragraph && el.paragraph.paragraphStyle && el.paragraph.paragraphStyle.namedStyleType.includes('HEADING')) {
-        flushEntry();
-        const style = el.paragraph.paragraphStyle.namedStyleType;
-        const level = parseInt(style.replace('HEADING_', ''));
-        const text = el.paragraph.elements.map(e => e.textRun ? e.textRun.content : '').join('').trim();
-        const id = el.paragraph.paragraphStyle.headingId ? el.paragraph.paragraphStyle.headingId.replace('h.', '') : 'root';
-
-        currentHeader = { id, text, level };
-        currentEntry = {
-          headerId: id, headerText: text,
-          properties: {}, tags: [], tasks: [], todos: []
-        };
-        continue;
-      }
-
-      // TABLE
-      if (el.table) {
-        // 1. Check for Properties (2 columns)
-        if (el.table.columns === 2) {
-          const rows = el.table.tableRows;
-          const tempProps = {};
-          rows.forEach(row => {
-            if (row.tableCells.length !== 2) return;
-            const key = extractText(row.tableCells[0]).trim();
-            const val = extractText(row.tableCells[1]).trim();
-            if (key && val && key.length < 50) { // Safety check for key length
-              const cleanKey = key.replace(/:$/, '');
-              tempProps[cleanKey] = val;
-            }
-          });
-          Object.assign(currentEntry.properties, tempProps);
-        }
-
-        // 2. RECURSE into table content to find tasks/tags/nested headers
-        el.table.tableRows.forEach(row => {
-          row.tableCells.forEach(cell => {
-            traverse(cell.content);
-          });
-        });
-        continue;
-      }
-
-      // PARAGRAPH CONTENT (Tasks, Tags, Todos)
-      if (el.paragraph) {
-        const text = extractText(el).trim();
-        if (!text) continue;
-
-        // Tasks ([ ] or [x])
-        // Check bullet or text pattern
-        const isTask = (el.paragraph.bullet) || text.startsWith('[ ]') || text.startsWith('[x]');
-        if (isTask) {
-          if (text.startsWith('[ ]') || text.startsWith('[x]')) {
-            currentEntry.tasks.push({
-              text: text.substring(3).trim(),
-              completed: text.toLowerCase().startsWith('[x]')
-            });
-          }
-        }
-
-        // Tags
-        const tagMatches = text.match(/#\w+/g);
-        if (tagMatches) currentEntry.tags.push(...tagMatches);
-
-        // Generic Markers (e.g., todo::, blog::, read::)
-        // Capture "Key:: Value" but exclude URLs (http:, https:)
-        const markerMatch = text.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
-        if (markerMatch) {
-          const label = markerMatch[1].toLowerCase();
-          if (!['http', 'https', 'mailto', 'ftp'].includes(label)) {
-            // Determine if we should strip the prefix. 
-            // For "todo:", users might expect it stripped, but for "blog:", they want context.
-            // Let's keep the full text for maximum clarity in a flat list.
-            currentEntry.todos.push(text);
-          }
-        }
-      }
-    }
-  };
-
-  traverse(doc.body.content || []);
-  flushEntry(); // Flush last
-  return sections;
-}
-
-
-// -----------------------------------------------------------------------------
-// HELPER: Parse Web Link (Used by Rebuild and IndexFile)
-// -----------------------------------------------------------------------------
-function parseWebLink(file) {
-  const description = file.description || '';
-  const entry = {
-    fileId: file.id,
-    fileName: file.name,
-    headerId: 'root', // Treating whole weblink as one section
-    headerText: file.name,
-    fileUpdated: file.modifiedTime,
-    isWebLink: true,
-    properties: {},
-    tags: [],
-    tasks: [],
-    todos: []
-  };
-
-  // 1. Tags
-  const textMatches = description.match(/#\w+/g);
-  if (textMatches) entry.tags.push(...textMatches);
-
-  if (file.appProperties && file.appProperties.tags) {
-    try {
-      const propTags = JSON.parse(file.appProperties.tags);
-      if (Array.isArray(propTags)) entry.tags.push(...propTags);
-    } catch (e) { }
-  }
-
-  // 2. Tasks & Markers
-  const lines = description.split('\n');
-  lines.forEach(line => {
-    const trimArgs = line.trim();
-    if (trimArgs.startsWith('[ ]') || trimArgs.startsWith('[x]')) {
-      entry.tasks.push({
-        text: trimArgs.substring(3).trim(),
-        completed: trimArgs.toLowerCase().startsWith('[x]')
+    if (!sectionsMap.has(key)) {
+      sectionsMap.set(key, {
+        fileId: item.sourceId,
+        fileName: item.source || 'Unknown File',
+        fileUpdated: item.updatedAt, // Approximate
+        headerId: 'root', // We don't have exact heading IDs from external scanner yet
+        headerText: sectionName,
+        properties: {},
+        tags: [],
+        tasks: [],
+        todos: []
       });
     }
 
-    const markerMatch = trimArgs.match(/^([a-zA-Z0-9_\-]+)::\s*(.+)/);
-    if (markerMatch) {
-      const label = markerMatch[1].toLowerCase();
-      if (!['http', 'https', 'mailto', 'ftp'].includes(label)) {
-        entry.todos.push(trimArgs);
-      }
+    const section = sectionsMap.get(key);
+
+    // Map Item Types
+    if (item.type === 'todo' || item.type === 'ap' || (item.status && (item.status === 'Done' || item.status === 'Open'))) {
+      // It's a Task
+      section.tasks.push({
+        text: item.title,
+        completed: item.status === 'Done'
+      });
+    } else if (item.type === 'tag') {
+      // It's a Tag
+      // parser.js stores full line "#tag desc", usually just "#tag"
+      // GNote renderer expects just the tag string usually, or handles it.
+      // Let's assume item.title is the tag.
+      section.tags.push(item.title);
+    } else if (item.type !== 'note') {
+      // Generic Marker (e.g. read:: Book)
+      // GNote expects "key:: value" string in 'todos' array
+      section.todos.push(`${item.type}:: ${item.title}`);
+    }
+
+    // Explicit Tags array in item?
+    if (item.tags && Array.isArray(item.tags)) {
+      item.tags.forEach(t => {
+        if (!section.tags.includes(t)) section.tags.push(t);
+      });
     }
   });
 
-  if (entry.tags.length > 0 || entry.tasks.length > 0 || entry.todos.length > 0) {
-    return [entry];
-  }
-  return [];
+  return Array.from(sectionsMap.values());
 }
 
-ipcMain.handle('drive:rebuildIndex', async (event, folderId = 'root') => {
-  if (!authClient) return { success: false, error: 'Auth required' };
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  const docs = google.docs({ version: 'v1', auth: authClient });
-
-  try {
-    const q = "(mimeType = 'application/vnd.google-apps.document' or appProperties has { key='role' and value='web_link' }) and trashed = false";
-    let allFiles = [];
-    let pageToken = null;
-    do {
-      const res = await drive.files.list({ q, pageToken, pageSize: 50, fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, description, appProperties)' });
-      allFiles.push(...(res.data.files || []));
-      pageToken = res.data.nextPageToken;
-    } while (pageToken);
-
-    const MAX_SCAN = 30; // Increased
-    const filesToScan = allFiles.slice(0, MAX_SCAN);
-    const fullIndex = [];
-
-    // Parallel Scanning for Speed
-    const scanningPromises = filesToScan.map(async (file) => {
-      try {
-        if (file.mimeType === 'application/vnd.google-apps.document') {
-          const docRes = await docs.documents.get({ documentId: file.id });
-          const sections = scanAndParseDoc(docRes.data);
-          sections.forEach(sec => {
-            sec.fileId = file.id;
-            sec.fileName = file.name;
-            sec.fileUpdated = file.modifiedTime;
-          });
-          return sections;
-        } else {
-          // Web Link
-          return parseWebLink(file);
-        }
-      } catch (e) {
-        console.warn(`Failed to scan ${file.name}: ${e.message}`);
-        return [];
-      }
-    });
-
-    const results = await Promise.all(scanningPromises);
-    results.forEach(res => fullIndex.push(...res));
-
-    const indexSearch = await drive.files.list({ q: "name = '_gnote_index.json' and trashed = false", fields: 'files(id)' });
-    const fileContent = JSON.stringify(fullIndex, null, 2);
-    const media = { mimeType: 'application/json', body: fileContent };
-
-    if (indexSearch.data.files.length > 0) {
-      await drive.files.update({ fileId: indexSearch.data.files[0].id, media: media });
-    } else {
-      await drive.files.create({ resource: { name: '_gnote_index.json', parents: ['root'] }, media: media });
-    }
-
-    return { success: true, count: fullIndex.length, data: fullIndex };
-  } catch (err) {
-    console.error('Index Rebuild Failed:', err);
-    return { success: false, error: err.message };
-  }
-});
-
-// SMART SYNC: Update index for a SINGLE file
-ipcMain.handle('drive:indexFile', async (event, fileId) => {
-  if (!authClient || !fileId) return { success: false, error: 'Invalid Request' };
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  const docs = google.docs({ version: 'v1', auth: authClient });
-
-  try {
-    // 1. Scan the File
-    const docFile = await drive.files.get({ fileId: fileId, fields: 'id, name, mimeType, description, appProperties, modifiedTime' }); // Fetch meta
-    let newSections = [];
-
-    if (docFile.data.mimeType === 'application/vnd.google-apps.document') {
-      const docRes = await docs.documents.get({ documentId: fileId });
-      newSections = scanAndParseDoc(docRes.data);
-    } else {
-      newSections = parseWebLink(docFile.data);
-    }
-
-    newSections.forEach(sec => {
-      sec.fileId = fileId;
-      sec.fileName = docFile.data.name;
-      sec.fileUpdated = docFile.data.modifiedTime;
-    });
-
-    // 2. Load Existing Index
-    let masterIndex = [];
-    let indexFileId = null;
-
-    const indexSearch = await drive.files.list({ q: "name = '_gnote_index.json' and trashed = false", fields: 'files(id)', pageSize: 1 });
-    if (indexSearch.data.files.length > 0) {
-      indexFileId = indexSearch.data.files[0].id;
-      const fileData = await drive.files.get({ fileId: indexFileId, alt: 'media' });
-      if (Array.isArray(fileData.data)) masterIndex = fileData.data;
-    }
-
-    // 3. Merge (Remove old items for this file, add new ones)
-    masterIndex = masterIndex.filter(item => item.fileId !== fileId);
-    masterIndex.push(...newSections);
-
-    // 4. Save
-    const fileContent = JSON.stringify(masterIndex, null, 2);
-    const media = { mimeType: 'application/json', body: fileContent };
-
-    if (indexFileId) {
-      await drive.files.update({ fileId: indexFileId, media: media });
-    } else {
-      await drive.files.create({ resource: { name: '_gnote_index.json', parents: ['root'] }, media: media });
-    }
-
-    return { success: true, count: newSections.length };
-
-  } catch (err) {
-    console.warn(`SmartSync Failed for ${fileId}:`, err.message);
-    return { success: false, error: err.message };
-  }
-});
-
-// LOAD INDEX (Read-Only)
 ipcMain.handle('drive:loadIndex', async (event) => {
   if (!authClient) return { success: false, error: 'Auth required' };
   const drive = google.drive({ version: 'v3', auth: authClient });
 
   try {
-    const indexSearch = await drive.files.list({ q: "name = '_gnote_index.json' and trashed = false", fields: 'files(id)', pageSize: 1 });
-    if (indexSearch.data.files.length > 0) {
-      const fileId = indexSearch.data.files[0].id;
-      const fileData = await drive.files.get({ fileId: fileId, alt: 'media' });
-      if (Array.isArray(fileData.data)) {
-        return { success: true, data: fileData.data };
-      }
+    // 1. Find database.json
+    const search = await drive.files.list({
+      q: "name = 'database.json' and trashed = false",
+      fields: 'files(id)',
+      pageSize: 1
+    });
+
+    if (search.data.files.length === 0) {
+      return { success: true, data: [] }; // No DB yet
     }
-    return { success: true, data: [] }; // Empty if not found
+
+    // 2. Read Content
+    const fileId = search.data.files[0].id;
+    const fileData = await drive.files.get({ fileId: fileId, alt: 'media' });
+
+    let items = [];
+    if (Array.isArray(fileData.data)) {
+      items = fileData.data;
+    } else if (typeof fileData.data === 'object') {
+      // unexpected format, maybe wrapped?
+      items = [];
+    }
+
+    // 3. Adapt to GNote Format
+    const sections = adaptDatabaseToSections(items);
+    return { success: true, data: sections };
+
   } catch (err) {
     console.warn('Load Index Failed:', err.message);
     return { success: false, error: err.message };
   }
 });
 
-// GET ALL TAGS (Read from JSON Index)
+// GET ALL TAGS (Adapted)
 ipcMain.handle('drive:getAllTags', async (event) => {
   if (!authClient) return {};
   const drive = google.drive({ version: 'v3', auth: authClient });
 
   try {
-    // 1. Load Index
-    let masterIndex = [];
-    const indexSearch = await drive.files.list({ q: "name = '_gnote_index.json' and trashed = false", fields: 'files(id)', pageSize: 1 });
-    if (indexSearch.data.files.length > 0) {
-      const fileId = indexSearch.data.files[0].id;
-      const fileData = await drive.files.get({ fileId: fileId, alt: 'media' });
-      if (Array.isArray(fileData.data)) masterIndex = fileData.data;
-    }
+    const search = await drive.files.list({
+      q: "name = 'database.json' and trashed = false",
+      fields: 'files(id)',
+      pageSize: 1
+    });
 
-    // 2. Aggregate Tags
-    const tagMap = {};
-    masterIndex.forEach(item => {
-      if (item.tags && item.tags.length > 0) {
-        item.tags.forEach(tag => {
-          if (!tagMap[tag]) tagMap[tag] = [];
-          if (!tagMap[tag].includes(item.fileId)) {
-            tagMap[tag].push(item.fileId);
-          }
-        });
+    if (search.data.files.length === 0) return {};
+
+    const fileId = search.data.files[0].id;
+    const fileData = await drive.files.get({ fileId: fileId, alt: 'media' });
+    const items = Array.isArray(fileData.data) ? fileData.data : [];
+
+    // Aggregate
+    const tagMap = {}; // Tag -> [FileID] {Set}
+
+    items.forEach(item => {
+      const fId = item.sourceId;
+      if (!fId) return;
+
+      // Tags from 'type'='tag'
+      if (item.type === 'tag') {
+        // Extract pure tag if "title" has spaces? 
+        // Usually parser puts "#tag property" -> title="#tag property"
+        // Let's simplified extract:
+        const matches = item.title.match(/#\w+/g);
+        if (matches) matches.forEach(t => addToMap(t, fId));
+      }
+
+      // Tags from 'tags' array
+      if (item.tags && Array.isArray(item.tags)) {
+        item.tags.forEach(t => addToMap(t, fId));
       }
     });
+
+    function addToMap(tag, fid) {
+      if (!tagMap[tag]) tagMap[tag] = new Set();
+      tagMap[tag].add(fid);
+    }
+
+    // Convert Sets to Arrays
+    for (let k in tagMap) { tagMap[k] = Array.from(tagMap[k]); }
 
     return tagMap;
 

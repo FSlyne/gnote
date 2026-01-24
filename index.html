@@ -164,10 +164,6 @@
                 style="flex:1; padding: 8px; background-color: #e8f0fe; color: #1967d2; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; display: flex; align-items: center; justify-content: center;">
                 <span style="margin-right: 6px;">📅</span> Today
             </button>
-            <button id="dashboard-btn" title="View Task Dashboard"
-                style="flex:1; padding: 8px; background-color: #fff; color: #3c4043; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 13px; display: flex; align-items: center; justify-content: center;">
-                <span style="margin-right: 6px;">📋</span> Tasks
-            </button>
             <button id="starred-btn" title="Show Starred Files"
                 style="width:35px; padding: 8px; background-color: #fff; color: #f4b400; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center;">
                 ⭐
@@ -219,38 +215,6 @@
         <webview id="doc-view" src="about:blank" allowpopups
             useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             style="width: 100%; height: 100%;"></webview>
-
-        <div id="dashboard-view"
-            style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:white; z-index:10; flex-direction:column;">
-            <div
-                style="padding:20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;">
-                <h2 style="margin:0; color:#202124;">Inline Database</h2>
-                <div>
-                    <select id="item-filter"
-                        style="padding:8px; margin-right:10px; border:1px solid #dadce0; border-radius:4px; font-size:13px;">
-                        <option value="all">📂 All Items</option>
-                        <option value="task">⬜ Tasks</option>
-                        <option value="todo">📝 Todos</option>
-                        <option value="tag">🏷️ Tags</option>
-                    </select>
-
-                    <button id="close-dash-btn"
-                        style="padding:8px 16px; border:1px solid #dadce0; background:white; cursor:pointer; border-radius:4px;">Close</button>
-                </div>
-            </div>
-            <div style="flex:1; overflow-y:auto; padding:20px;">
-                <table style="width:100%; border-collapse:collapse; font-size:13px;">
-                    <thead>
-                        <tr style="text-align:left; color:#5f6368; border-bottom:2px solid #eee;">
-                            <th style="padding:10px;">Task</th>
-                            <th style="padding:10px; width:100px;">Synced</th>
-                            <th style="padding:10px; width:80px;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="dashboard-table-body"></tbody>
-                </table>
-            </div>
-        </div>
 
         <div id="graph-view">
             <button id="close-graph-btn">Close Graph</button>
